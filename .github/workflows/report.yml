@@ -1,0 +1,32 @@
+name: daily-report
+
+# Sends the Chinese daily review to Telegram once a day. Time is UTC —
+# 09:00 UTC ≈ evening in Australia. Adjust the cron to your timezone.
+on:
+  schedule:
+    - cron: "0 9 * * *"
+  workflow_dispatch: {}
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      TRADING_MODE: demo
+      DRY_RUN: "false"
+      ALLOWED_EPICS: GOLD,SILVER,US500,OIL_CRUDE,BTCUSD,EURUSD
+      NOTIFY_ON: all
+      CAPITAL_API_KEY: ${{ secrets.CAPITAL_API_KEY }}
+      CAPITAL_IDENTIFIER: ${{ secrets.CAPITAL_IDENTIFIER }}
+      CAPITAL_PASSWORD: ${{ secrets.CAPITAL_PASSWORD }}
+      DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+      - run: npm run report
