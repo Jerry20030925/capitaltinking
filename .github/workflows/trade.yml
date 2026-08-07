@@ -4,7 +4,7 @@ name: trade
 # running even when your computer is off. Times are UTC.
 on:
   schedule:
-    - cron: "0 * * * *" # every hour on the hour (UTC)
+    - cron: "0 */2 * * *" # every 2 hours (UTC) — stays within Actions free tier
   workflow_dispatch: {} # allow manual "Run workflow" from the Actions tab
 
 concurrency:
