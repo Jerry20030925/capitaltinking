@@ -13,6 +13,7 @@ import { checkCircuitBreakers, type BreakerStatus } from "./risk/breakers.js";
 import { notify, notifyEnabled, notifyProvider, telegramFindChatIds } from "./notify/notify.js";
 import { buildDailyReport } from "./analytics/report.js";
 import { buildStatsReport, buildPerfHint } from "./analytics/stats.js";
+import { computeReadiness, renderReadiness, maybeAlertReadiness } from "./analytics/readiness.js";
 import { loadTrades } from "./analytics/trades.js";
 import type { OpenPosition, Transaction } from "./capital/client.js";
 
@@ -154,7 +155,9 @@ async function maybeSendDailyReport(client: CapitalClient): Promise<void> {
   try {
     const account = await client.getAccount();
     const positions = await client.getPositions();
-    const report = await buildDailyReport(client, account, positions);
+    const daily = await buildDailyReport(client, account, positions);
+    const readiness = renderReadiness(await computeReadiness(account.balance));
+    const report = `${daily}\n\n${readiness}`;
     log.info(report);
     if (notifyEnabled()) await notify(report);
     lastReportDate = today;
@@ -465,6 +468,13 @@ async function runCycle(client: CapitalClient): Promise<void> {
     log.info(`Brain memory now holds ${updated.lessons.length} lessons.`);
   }
 
+  // Go-live readiness self-check: alert (once) the first time every criterion
+  // passes on the demo account. Reuses the ledger already loaded this cycle.
+  const readiness = await maybeAlertReadiness(account.balance, ledger, notify);
+  log.info(
+    `🚦 切真钱自检：${readiness.passed}/${readiness.total} 达标${readiness.ready ? "（全部达标！）" : ""}`,
+  );
+
   // Notify. In "actions" mode, stay quiet on pure-HOLD cycles. Messages are
   // QUEUED here and flushed on the 2h cadence by the caller (see flushNotifications).
   const hadAction = risk.approved.length > 0 || risk.closes.length > 0;
@@ -504,6 +514,17 @@ async function main() {
 
   if (args.includes("--status")) {
     await showStatus(client);
+    return;
+  }
+
+  // Go-live readiness self-check: prints the demo→live checklist. Pass --notify
+  // to also push it to Telegram. Needs the account balance for the drawdown %.
+  if (args.includes("--readiness")) {
+    await client.login();
+    const account = await client.getAccount();
+    const report = renderReadiness(await computeReadiness(account.balance));
+    log.info("\n" + report);
+    if (args.includes("--notify") && notifyEnabled()) await notify(report);
     return;
   }
 

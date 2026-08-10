@@ -14,7 +14,7 @@ import { loadTrades, type ClosedTrade } from "./trades.js";
 const sign = (n: number) => (n >= 0 ? "+" : "");
 const pct = (x: number) => `${Math.round(x * 100)}%`;
 
-interface Metrics {
+export interface Metrics {
   n: number; // scored trades (with realised P/L)
   wins: number;
   winRate: number; // 0..1
@@ -25,7 +25,7 @@ interface Metrics {
   maxDrawdown: number; // peak-to-trough decline on the equity curve, currency
 }
 
-function metrics(trades: ClosedTrade[]): Metrics {
+export function metrics(trades: ClosedTrade[]): Metrics {
   const scored = trades.filter((t) => typeof t.pnl === "number") as (ClosedTrade & {
     pnl: number;
   })[];
@@ -124,14 +124,26 @@ function groupBy(trades: ClosedTrade[], keyOf: (t: ClosedTrade) => string): Buck
  * lessons? Split the scored trades chronologically in half and compare the two
  * halves' expectancy / win-rate. Returns "" until there are enough samples.
  */
-function learningTrendLine(closed: ClosedTrade[]): string {
+export interface LearningTrend {
+  hasData: boolean; // enough samples (≥8) to split into halves
+  early: Metrics;
+  recent: Metrics;
+}
+
+/** Split scored trades chronologically in half to gauge if the brain improves. */
+export function learningTrend(closed: ClosedTrade[]): LearningTrend {
   const scored = closed
     .filter((t) => typeof t.pnl === "number")
     .sort((a, b) => new Date(a.close.at).getTime() - new Date(b.close.at).getTime());
-  if (scored.length < 8) return "";
+  if (scored.length < 8) return { hasData: false, early: metrics([]), recent: metrics([]) };
   const mid = Math.floor(scored.length / 2);
-  const early = metrics(scored.slice(0, mid));
-  const recent = metrics(scored.slice(mid));
+  return { hasData: true, early: metrics(scored.slice(0, mid)), recent: metrics(scored.slice(mid)) };
+}
+
+function learningTrendLine(closed: ClosedTrade[]): string {
+  const t = learningTrend(closed);
+  if (!t.hasData) return "";
+  const { early, recent } = t;
   const d = recent.expectancy - early.expectancy;
   const arrow = d > 0.01 ? "↑ 在变好" : d < -0.01 ? "↓ 在变差" : "→ 基本持平";
   return `学习趋势：早期(${early.n}笔)期望${sign(early.expectancy)}${early.expectancy.toFixed(1)}/胜率${pct(
