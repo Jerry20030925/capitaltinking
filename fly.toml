@@ -20,7 +20,7 @@ primary_region = "iad"
   # Second brain (Qwen) — non-secrets here; QWEN_API_KEY via `fly secrets set`.
   QWEN_BASE_URL = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
   QWEN_MODEL = "qwen-plus"
-  SECOND_BRAIN_MODE = "observe"
+  SECOND_BRAIN_MODE = "enforce"   # BUY/SELL only when BOTH brains agree
   ALLOWED_EPICS = "GOLD,SILVER,US500,OIL_CRUDE,BTCUSD,EURUSD"
 
   MAX_POSITION_SIZE = "1000"
