@@ -143,6 +143,34 @@ function renderGroup(title: string, buckets: Bucket[]): string[] {
   return lines;
 }
 
+/**
+ * Compact, prompt-sized track record fed BACK to the strategy brain so it learns
+ * which setups/regimes actually pay and leans into them (and away from losers).
+ * Returns "" until there's enough scored history to be worth trusting.
+ */
+export function buildPerfHint(closed: ClosedTrade[]): string {
+  const scored = closed.filter((t) => typeof t.pnl === "number");
+  if (scored.length < 5) return ""; // too little to learn from — don't bias the brain
+  const o = metrics(closed);
+  const lines: string[] = [
+    `总体 n=${o.n} 胜率${pct(o.winRate)} 期望${sign(o.expectancy)}${o.expectancy.toFixed(1)}${
+      o.expectancyR !== null ? `(${sign(o.expectancyR)}${o.expectancyR.toFixed(2)}R)` : ""
+    } 盈亏比${fmtPF(o.profitFactor)}`,
+  ];
+  const summarise = (label: string, buckets: Bucket[]) => {
+    const good = buckets.filter((b) => b.scored >= 3);
+    if (!good.length) return;
+    const parts = good.map((b) => {
+      const avg = b.total / b.scored;
+      return `${b.key} 胜率${pct(b.wins / b.scored)}/均${sign(avg)}${avg.toFixed(1)}(n=${b.scored})`;
+    });
+    lines.push(`${label}：${parts.join("；")}`);
+  };
+  summarise("按打法", groupBy(closed, (t) => t.open.setup ?? "未标注"));
+  summarise("按状态", groupBy(closed, (t) => t.open.regime ?? "未标注"));
+  return lines.join("\n");
+}
+
 /** Build the Chinese analytics report. Pure over the audit log — no live calls. */
 export async function buildStatsReport(): Promise<string> {
   const { closed, stillOpen } = await loadTrades();

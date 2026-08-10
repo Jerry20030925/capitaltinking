@@ -11,7 +11,7 @@ import { applyRisk, type RiskResult } from "./risk/guard.js";
 import { checkCircuitBreakers, type BreakerStatus } from "./risk/breakers.js";
 import { notify, notifyEnabled, notifyProvider, telegramFindChatIds } from "./notify/notify.js";
 import { buildDailyReport } from "./analytics/report.js";
-import { buildStatsReport } from "./analytics/stats.js";
+import { buildStatsReport, buildPerfHint } from "./analytics/stats.js";
 import { loadTrades } from "./analytics/trades.js";
 import type { OpenPosition, Transaction } from "./capital/client.js";
 
@@ -100,6 +100,45 @@ function buildNotification(
 }
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
+
+// ── Notification batching ────────────────────────────────────────────────────
+// A fast trading loop shouldn't message you every cycle. Instead we QUEUE each
+// cycle's action summary and flush at most once per NOTIFY_INTERVAL_MINUTES
+// (default 2h): all actions in the window are sent together, and if nothing
+// happened a short heartbeat check-in goes out so you know it's alive.
+const NOTIFY_INTERVAL_MS = config.notify.intervalMinutes * 60_000;
+let lastNotifyAt = 0;
+let lastBalance: number | undefined;
+const notifyQueue: string[] = [];
+
+function queueNotification(msg: string): void {
+  notifyQueue.push(msg);
+}
+
+async function flushNotifications(opts: { force?: boolean } = {}): Promise<void> {
+  if (!notifyEnabled()) {
+    notifyQueue.length = 0;
+    return;
+  }
+  const now = Date.now();
+  if (!opts.force && now - lastNotifyAt < NOTIFY_INTERVAL_MS) return;
+
+  const stamp = new Date().toLocaleString("zh-CN", { hour12: false });
+  let body: string;
+  if (notifyQueue.length) {
+    const header = `🧠 capitaltinking 定时汇报（每 ${config.notify.intervalMinutes} 分钟）· ${stamp}`;
+    body = [header, ...notifyQueue].join("\n\n———\n\n");
+  } else {
+    // Heartbeat: nothing traded this window — a brief "still watching" check-in.
+    body =
+      `🧠 capitaltinking 定时汇报（每 ${config.notify.intervalMinutes} 分钟）· ${stamp}\n` +
+      (lastBalance != null ? `账户余额：${lastBalance}\n` : "") +
+      "😴 期间没有触发交易，持续观望中。";
+  }
+  await notify(body);
+  notifyQueue.length = 0;
+  lastNotifyAt = now;
+}
 
 // Daily report is sent once per calendar day, on/after config.reportHour.
 let lastReportDate = "";
@@ -207,6 +246,7 @@ async function runCycle(client: CapitalClient): Promise<void> {
   await client.login();
 
   const account = await client.getAccount();
+  lastBalance = account.balance;
   log.info(`Account balance: ${account.balance} ${account.currency} (available ${account.available})`);
 
   const positions = await client.getPositions();
@@ -216,6 +256,10 @@ async function runCycle(client: CapitalClient): Promise<void> {
   // Circuit breakers: read the ledger and decide whether new opens are halted.
   const { closed: ledger } = await loadTrades();
   const breakers = checkCircuitBreakers(ledger, account.balance);
+  // Feed the brains their own recent track record so they lean into setups/regimes
+  // that actually pay (and away from losers) — a lightweight learning loop.
+  const perfHint = buildPerfHint(ledger);
+  if (perfHint) log.info(`Perf feedback to brain:\n${perfHint}`);
   log.info(
     `Risk budget: 今日 ${breakers.dailyPnl} (亏${breakers.dailyLossPct}%) / 近7日 ${breakers.weeklyPnl} (亏${breakers.weeklyLossPct}%) / 回撤 ${breakers.drawdownPct}%`,
   );
@@ -253,7 +297,7 @@ async function runCycle(client: CapitalClient): Promise<void> {
   }
 
   // The primary brain (DeepSeek) thinks.
-  const brain = await think(news, snapshots, positions, account.balance);
+  const brain = await think(news, snapshots, positions, account.balance, perfHint);
   log.info(`Market summary: ${brain.marketSummary}`);
   if (brain.analysis) log.info(`Analysis: ${brain.analysis}`);
   for (const d of brain.decisions) {
@@ -268,7 +312,7 @@ async function runCycle(client: CapitalClient): Promise<void> {
   let second: BrainOutput | undefined;
   if (config.secondBrain.enabled) {
     try {
-      second = await think(news, snapshots, positions, account.balance, callQwen);
+      second = await think(news, snapshots, positions, account.balance, perfHint, callQwen);
       ensemble = combineBrains(brain, second, config.secondBrain.mode);
       decisions = ensemble.decisions;
       log.info(
@@ -394,10 +438,11 @@ async function runCycle(client: CapitalClient): Promise<void> {
     log.info("No trades this cycle — holding.");
   }
 
-  // Notify. In "actions" mode, stay quiet on pure-HOLD cycles.
+  // Notify. In "actions" mode, stay quiet on pure-HOLD cycles. Messages are
+  // QUEUED here and flushed on the 2h cadence by the caller (see flushNotifications).
   const hadAction = risk.approved.length > 0 || risk.closes.length > 0;
   if (notifyEnabled() && (config.notify.verbosity === "all" || hadAction)) {
-    await notify(buildNotification(brain, risk, account.balance, devil, breakers, ensemble));
+    queueNotification(buildNotification(brain, risk, account.balance, devil, breakers, ensemble));
   }
 }
 
@@ -448,6 +493,9 @@ async function main() {
     const intervalMs = config.loopIntervalMinutes * 60_000;
     log.info(`Loop mode: every ${config.loopIntervalMinutes} min. Ctrl-C to stop.`);
     // Run immediately, then on interval.
+    log.info(
+      `Notifications batched: at most one push every ${config.notify.intervalMinutes} min.`,
+    );
     const tick = async () => {
       try {
         await runCycle(client);
@@ -455,14 +503,18 @@ async function main() {
       } catch (e) {
         log.error("Cycle failed:", (e as Error).message);
       }
+      // Flush queued action summaries on the 2h cadence (heartbeat if idle).
+      await flushNotifications();
     };
     await tick();
     setInterval(tick, intervalMs);
     return;
   }
 
-  // Default: single cycle (--once or no flag).
+  // Default: single cycle (--once or no flag). One-shot invocations (e.g. a cron)
+  // send their summary immediately rather than waiting for the batch window.
   await runCycle(client);
+  await flushNotifications({ force: true });
 }
 
 main().catch((e) => {

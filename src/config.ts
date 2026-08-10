@@ -56,9 +56,15 @@ export const config = {
     enabled: !!process.env.QWEN_API_KEY && bool("SECOND_BRAIN", true),
     // "observe" = record both brains + agreement, trade the primary's calls (A/B).
     // "enforce" = a BUY/SELL needs BOTH brains to agree, else HOLD.
-    mode: ((process.env.SECOND_BRAIN_MODE ?? "observe").toLowerCase() === "enforce"
-      ? "enforce"
-      : "observe") as "enforce" | "observe",
+    // "either"  = OR-logic: trade if EITHER brain sees an opportunity (most
+    //             aggressive — more trades, more chances to profit).
+    mode: (() => {
+      const m = (process.env.SECOND_BRAIN_MODE ?? "observe").toLowerCase();
+      return (m === "enforce" ? "enforce" : m === "either" ? "either" : "observe") as
+        | "enforce"
+        | "observe"
+        | "either";
+    })(),
   },
 
   brain: {
@@ -82,19 +88,36 @@ export const config = {
       .split(",")
       .map((s) => s.trim().toUpperCase())
       .filter(Boolean),
-    maxPositionSize: num("MAX_POSITION_SIZE", 1),
+    // Optional HARD lot ceiling per position. 0 = no fixed-lot ceiling (let the
+    // capital-%/margin/loss-cap decide the size). Kept small only if you want to
+    // clamp lots regardless of capital.
+    maxPositionSize: num("MAX_POSITION_SIZE", 0),
     maxOpenPositions: num("MAX_OPEN_POSITIONS", 3),
     minAccountBalance: num("MIN_ACCOUNT_BALANCE", 100),
     stopLossPct: num("STOP_LOSS_PCT", 2),
     takeProfitPct: num("TAKE_PROFIT_PCT", 4),
     minConfidence: num("MIN_CONFIDENCE", 0.65),
-    // Dynamic sizing: size each trade by RISK-TO-STOP so the loss if the stop is
-    // hit is capped at RISK_PER_TRADE_PCT of equity. MAX_POSITION_SIZE is a hard
-    // anti-runaway ceiling. (false = fixed MAX_POSITION_SIZE lot.)
+    // Position-sizing mode:
+    //   "capital" = deploy a target % of AVAILABLE funds per trade (conviction-
+    //               scaled) to MAXIMISE return on capital — the default.
+    //   "risk"    = size by risk-to-stop so a stop-out loses ~RISK_PER_TRADE_PCT.
+    sizingMode: ((process.env.SIZING_MODE ?? "capital").toLowerCase() === "risk"
+      ? "risk"
+      : "capital") as "capital" | "risk",
+    // Capital mode: target % of AVAILABLE funds to put to work per trade at full
+    // conviction (scaled down for lower confidence). This is the main return lever
+    // — kept high so genuine opportunities deploy real size, not a token lot.
+    capitalDeployPct: num("CAPITAL_DEPLOY_PCT", 50),
+    // Dynamic sizing (risk mode): size each trade by RISK-TO-STOP so the loss if
+    // the stop is hit is capped at RISK_PER_TRADE_PCT of equity.
     dynamicSizing: bool("DYNAMIC_SIZING", true),
-    // Max % of equity lost on a single trade if its stop-loss is hit. This is the
-    // core per-trade risk budget — one trade risks ~1R.
+    // Max % of equity lost on a single trade if its stop-loss is hit — the risk-
+    // mode sizing target.
     riskPerTradePct: num("RISK_PER_TRADE_PCT", 0.5),
+    // Universal SAFETY CEILING: whatever the sizer picks, a single stop-out may
+    // never lose more than this % of equity. Oversized picks are scaled DOWN to
+    // fit (only refused if even the min lot breaches it). Tail-risk backstop.
+    maxTradeLossPct: num("MAX_TRADE_LOSS_PCT", 5),
     // Circuit breakers (realised-P/L based, computed from the committed ledger).
     // On breach the risk engine halts ALL new opens; closes still allowed.
     maxDailyLossPct: num("MAX_DAILY_LOSS_PCT", 2),
@@ -116,6 +139,11 @@ export const config = {
     // "actions" = only notify when something happens (opens/closes) — default.
     // "all"     = also notify on cycles that only HOLD.
     verbosity: (process.env.NOTIFY_ON ?? "actions").toLowerCase() as "actions" | "all",
+    // Push messages are BATCHED and sent at most once per this many minutes, so
+    // a fast trading loop doesn't spam you every cycle. Default: one message /2h.
+    // Actions inside the window are collected and flushed together; if nothing
+    // happened, a brief heartbeat check-in is sent instead.
+    intervalMinutes: num("NOTIFY_INTERVAL_MINUTES", 120),
   },
 } as const;
 

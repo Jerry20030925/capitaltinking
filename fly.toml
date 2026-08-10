@@ -20,10 +20,16 @@ primary_region = "iad"
   # Second brain (Qwen) — non-secrets here; QWEN_API_KEY via `fly secrets set`.
   QWEN_BASE_URL = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
   QWEN_MODEL = "qwen-plus"
-  SECOND_BRAIN_MODE = "enforce"   # BUY/SELL only when BOTH brains agree
+  # OR-logic: trade if EITHER brain sees an opportunity (no need for both to agree).
+  SECOND_BRAIN_MODE = "either"
   ALLOWED_EPICS = "GOLD,SILVER,US500,OIL_CRUDE,BTCUSD,EURUSD"
 
-  MAX_POSITION_SIZE = "1000"
+  # Position sizing: deploy a real slice of available funds per trade (not a token
+  # lot). No hard lot ceiling — capital-% + the per-trade loss cap size each trade.
+  SIZING_MODE = "capital"
+  CAPITAL_DEPLOY_PCT = "50"
+  MAX_TRADE_LOSS_PCT = "5"
+  MAX_POSITION_SIZE = "0"
   MAX_OPEN_POSITIONS = "3"
   MIN_ACCOUNT_BALANCE = "100"
   STOP_LOSS_PCT = "2"
@@ -44,7 +50,10 @@ primary_region = "iad"
   DEVIL_ADVOCATE = "true"
   DEVIL_MODE = "observe"
 
-  NOTIFY_ON = "all"
+  # Only push on real actions (opens/closes); pure-HOLD cycles stay quiet. Messages
+  # are BATCHED and sent at most once every 2h (a heartbeat goes out if idle).
+  NOTIFY_ON = "actions"
+  NOTIFY_INTERVAL_MINUTES = "120"
 
 # Persistent disk for the trade ledger, so analytics survive restarts/deploys.
 [mounts]

@@ -65,6 +65,9 @@ export function applyRisk(
   }
 
   let projectedOpen = positions.length;
+  // Available margin remaining THIS cycle — decremented as we approve opens so
+  // several capital-deployed trades in one cycle don't collectively over-commit.
+  let availableLeft = account.available;
 
   for (const d of decisions) {
     if (d.action === "HOLD") continue;
@@ -128,55 +131,73 @@ export function applyRisk(
       continue;
     }
 
-    // Stop-loss / take-profit levels derived from configured percentages.
-    const slDist = entry * (r.stopLossPct / 100);
-    const tpDist = entry * (r.takeProfitPct / 100);
+    // Stop-loss / take-profit levels. Prefer the brain's per-trade, volatility-
+    // aware distances (better risk:reward); fall back to the config percentages.
+    const slPct = d.stopLossPct ?? r.stopLossPct;
+    const tpPct = d.takeProfitPct ?? r.takeProfitPct;
+    const slDist = entry * (slPct / 100);
+    const tpDist = entry * (tpPct / 100);
     const stopLevel = direction === "BUY" ? entry - slDist : entry + slDist;
     const profitLevel = direction === "BUY" ? entry + tpDist : entry - tpDist;
 
-    // Risk-to-stop position sizing: size so the loss IF the stop is hit is
-    // capped at RISK_PER_TRADE_PCT of equity (scaled down for lower conviction,
-    // never above the cap). size = riskBudget / (contractSize × stopDistance).
-    // This makes every trade risk ~1R and bounds tail loss by construction.
+    // Conviction scaler: even a bare min-confidence trade deploys a solid base
+    // (0.7 of target) so we don't trickle token lots; full conviction deploys the
+    // whole target. Tune the floor via how aggressive you want low-conf trades.
     const equity = account.balance;
-    let size = r.maxPositionSize;
-    if (r.dynamicSizing) {
-      const span = Math.max(0.0001, 1 - r.minConfidence);
-      const convFactor =
-        0.5 + 0.5 * Math.min(1, Math.max(0, (d.confidence - r.minConfidence) / span));
+    const span = Math.max(0.0001, 1 - r.minConfidence);
+    const convFactor =
+      0.7 + 0.3 * Math.min(1, Math.max(0, (d.confidence - r.minConfidence) / span));
+
+    // Position sizing.
+    let size: number;
+    if (r.sizingMode === "capital") {
+      // CAPITAL-DEPLOYMENT sizing: put a target fraction of AVAILABLE funds to
+      // work per trade (conviction-scaled), maximising return on capital instead
+      // of trickling min lots. The stop-loss ceiling below still bounds tail loss.
+      const targetMargin = availableLeft * (r.capitalDeployPct / 100) * convFactor;
+      const marginPerUnit = market.contractSize * entry * market.marginFactor;
+      let raw = marginPerUnit > 0 ? targetMargin / marginPerUnit : market.minDealSize;
+      if (market.maxDealSize > 0) raw = Math.min(raw, market.maxDealSize);
+      if (r.maxPositionSize > 0) raw = Math.min(raw, r.maxPositionSize);
+      size = roundToStep(raw, market.minDealSize);
+      if (size < market.minDealSize) size = market.minDealSize;
+    } else if (r.dynamicSizing) {
+      // RISK-TO-STOP sizing: size so the loss if the stop is hit ≈ RISK_PER_TRADE_PCT.
       const budget = equity * (r.riskPerTradePct / 100) * convFactor;
       const riskPerUnit = market.contractSize * slDist;
       let raw = riskPerUnit > 0 ? budget / riskPerUnit : market.minDealSize;
-
-      // Upper bounds first: instrument max (if known) and the anti-runaway ceiling.
       if (market.maxDealSize > 0) raw = Math.min(raw, market.maxDealSize);
-      raw = Math.min(raw, r.maxPositionSize);
-      // Round down to the instrument's step, then honour its minimum LAST so an
-      // instrument whose minimum exceeds the ceiling (e.g. FX = 100) still trades.
+      if (r.maxPositionSize > 0) raw = Math.min(raw, r.maxPositionSize);
       size = roundToStep(raw, market.minDealSize);
       if (size < market.minDealSize) size = market.minDealSize;
+    } else {
+      size = r.maxPositionSize > 0 ? r.maxPositionSize : market.minDealSize;
     }
 
-    // Actual risk at the chosen size (post-rounding / min-lot floor).
-    const riskAmount = round(size * market.contractSize * slDist);
-
-    // Hard per-trade cap: if the smallest tradeable size still risks more than
-    // RISK_PER_TRADE_PCT of equity, REFUSE — never silently take oversized risk.
-    const maxRisk = equity * (r.riskPerTradePct / 100);
-    if (riskAmount > maxRisk * 1.001) {
-      result.rejected.push({
-        epic: d.epic,
-        reason: `最小手数风险 ${riskAmount} 超过单笔上限 ${round(maxRisk)}（${r.riskPerTradePct}% 权益）`,
-      });
-      continue;
+    // SAFETY CEILING (kept as a cap): whatever the sizer picked, never let a single
+    // stop-out lose more than MAX_TRADE_LOSS_PCT of equity. Scale the position DOWN
+    // to fit; only REFUSE if even the min lot breaches the ceiling.
+    const maxRisk = equity * (r.maxTradeLossPct / 100);
+    let riskAmount = round(size * market.contractSize * slDist);
+    if (riskAmount > maxRisk * 1.001 && slDist > 0) {
+      const capped = maxRisk / (market.contractSize * slDist);
+      size = roundToStep(capped, market.minDealSize);
+      if (size < market.minDealSize) {
+        result.rejected.push({
+          epic: d.epic,
+          reason: `最小手数风险 ${round(market.minDealSize * market.contractSize * slDist)} 超过单笔上限 ${round(maxRisk)}（${r.maxTradeLossPct}% 权益）`,
+        });
+        continue;
+      }
+      riskAmount = round(size * market.contractSize * slDist);
     }
 
-    // Margin safety: don't open a position we can't cover.
+    // Margin safety: don't open a position we can't cover (uses remaining margin).
     const requiredMargin = size * market.contractSize * entry * market.marginFactor;
-    if (requiredMargin > account.available) {
+    if (requiredMargin > availableLeft) {
       result.rejected.push({
         epic: d.epic,
-        reason: `所需保证金 ${round(requiredMargin)} 超过可用 ${round(account.available)}`,
+        reason: `所需保证金 ${round(requiredMargin)} 超过可用 ${round(availableLeft)}`,
       });
       continue;
     }
@@ -201,6 +222,7 @@ export function applyRisk(
       secondConfidence: d.secondConfidence,
       secondAgree: d.secondAgree,
     });
+    availableLeft = round(availableLeft - requiredMargin);
     projectedOpen++;
   }
 

@@ -50,6 +50,13 @@ export interface TradeDecision {
   confidence: number; // 0..1
   reasoning: string;
   setup?: Setup; // which playbook this trade expresses (for BUY/SELL)
+  // Per-trade, volatility-aware risk management (brain-chosen). Distances as a %
+  // of entry. When present they OVERRIDE the fixed config SL/TP so each trade
+  // gets an intelligent stop (wide enough to survive noise) and a target sized to
+  // the real move — the core of a good risk:reward and thus of profit. Clamped to
+  // safe bounds in `think()`; fall back to config defaults when absent.
+  stopLossPct?: number; // e.g. 1.5 = stop 1.5% away from entry
+  takeProfitPct?: number; // e.g. 4.5 = target 4.5% away from entry
   // --- annotations added by the Devil's Advocate stage (see brain/devil.ts) ---
   counterConfidence?: number; // 0..1: how hard the critic argued against this trade
   devilVerdict?: "uphold" | "reduce" | "veto";
@@ -90,11 +97,25 @@ const SYSTEM_PROMPT = `你是一名严谨、专业的宏观交易分析师，为
    例：新闻利多但 RSI 已 78、价格远离 EMA 又临阻力 → 追多风险大，降信心或等回调。
 3. 组合与相关性：避免同时重仓高度相关的品种（如 GOLD 与 SILVER 同为避险、会放大同向风险；
    US500 与科技情绪高度相关）。若已有同向敞口，新仓要更谨慎或分散。
-4. 持仓管理：审视每个现有持仓的浮动盈亏(uPL)与最新新闻/动量：
-   - 若行情/新闻已转为不利 → 用 CLOSE 及时止损；
-   - 若逻辑已兑现、动量衰竭 → 可 CLOSE 止盈。
+4. 持仓管理（让利润奔跑、及时砍亏）：审视每个现有持仓的浮动盈亏(uPL)与最新新闻/动量：
+   - 若行情/新闻已转为不利、或逻辑被证伪 → 用 CLOSE 果断止损，不要死扛；
+   - 若逻辑仍在兑现、趋势健康 → 继续持有让利润奔跑，不要因小赚就急着 CLOSE；
+   - 只有当动量明显衰竭、出现反转信号（如动量背离、冲高回落）时才 CLOSE 止盈。
+4.5 每笔风险管理（止损/止盈，直接决定盈亏比，务必认真给）：对每个 BUY/SELL，
+   结合该品种的 ATR/波动% 与最近的支撑/阻力，给出这笔交易的：
+   - stopLossPct：止损距离（占现价的百分比）。高波动品种（如 BTC）要放宽，避免被日内噪音扫损；
+     低波动品种可收窄。原则是把止损放在“若被打到，说明我看错了”的结构位之外。
+   - takeProfitPct：止盈距离（占现价的百分比）。设在下一个明显阻力/支撑或趋势可达目标处。
+   - 追求非对称盈亏比：目标 takeProfitPct ≥ 2×stopLossPct（盈亏比≥2）。趋势(trending)行情里
+     可把止盈放得更远、让利润奔跑；区间(ranging)行情里目标要保守。盈亏比太差(<1.5)宁可 HOLD。
+   - 合理范围：stopLossPct 约 0.5–8，takeProfitPct 约 1–25。不给则用系统默认值。
 5. 诚实定价信心：confidence 必须反映真实把握度，不确定就给低分并 HOLD。
    你无法、也绝不能保证盈利——不要编造不存在的把握。
+5.5 仓位与资金效率（重要）：系统会【根据当前可用资金】按你的 confidence 自动放大仓位——
+   confidence 越高，投入的可用资金比例越大（高把握时可动用可观比例的可用资金），
+   目标是在当前行情下把资金用足、最大化收益，而不是每次只买一点、收益也只有一点。
+   因此：真正有把握、行情共振明确的机会，请给出【高 confidence】以充分部署资金、放大收益；
+   把握不足就给低分或 HOLD。切勿为了下大单而虚高 confidence——止损亏损上限仍会兜底缩仓。
 
 6. 市场状态标注（regime）：用一个词概括当前整体市场状态，只能从下列英文枚举中选一个：
    risk-on（冒险情绪）、risk-off（避险情绪）、trending（单边趋势）、ranging（区间震荡）、
@@ -116,9 +137,10 @@ const SYSTEM_PROMPT = `你是一名严谨、专业的宏观交易分析师，为
   "analysis": "你按上面 1-7 步的推理过程",
   "regime": "risk-off",
   "decisions": [
-    { "epic": "GOLD", "action": "BUY|SELL|CLOSE|HOLD", "confidence": 0.0-1.0, "setup": "safe-haven", "reasoning": "理由，引用具体新闻与动量" }
+    { "epic": "GOLD", "action": "BUY|SELL|CLOSE|HOLD", "confidence": 0.0-1.0, "setup": "safe-haven", "stopLossPct": 1.5, "takeProfitPct": 4.0, "reasoning": "理由，引用具体新闻与动量" }
   ]
-}`;
+}
+（stopLossPct/takeProfitPct 仅 BUY/SELL 需要；HOLD/CLOSE 可省略。）`;
 
 function buildUserPrompt(
   news: NewsItem[],
@@ -126,6 +148,7 @@ function buildUserPrompt(
   positions: OpenPosition[],
   balance: number,
   allowedEpics: string[],
+  perfHint: string,
 ): string {
   const newsBlock = news
     .map((n, i) => `${i + 1}. [${n.source}] ${n.title}${n.summary ? ` — ${n.summary}` : ""}`)
@@ -154,10 +177,14 @@ function buildUserPrompt(
           )
           .join("\n");
 
+  const perfBlock = perfHint
+    ? `\n你近期的实盘复盘（据此优化打法与信心，倾向近期正期望的打法、回避持续亏损的打法；别机械照搬）：\n${perfHint}\n`
+    : "";
+
   return `允许交易的品种：${allowedEpics.join(", ")}
 账户余额：${balance}
 最大持仓数：${config.risk.maxOpenPositions}，单品种最大手数：${config.risk.maxPositionSize}
-
+${perfBlock}
 今日新闻标题：
 ${newsBlock}
 
@@ -175,11 +202,12 @@ export async function think(
   markets: MarketSnapshot[],
   positions: OpenPosition[],
   balance: number,
+  perfHint: string = "",
   call: (system: string, user: string) => Promise<string> = callDeepSeek,
 ): Promise<BrainOutput> {
   const content = await call(
     SYSTEM_PROMPT,
-    buildUserPrompt(news, markets, positions, balance, config.risk.allowedEpics),
+    buildUserPrompt(news, markets, positions, balance, config.risk.allowedEpics, perfHint),
   );
 
   let parsed: BrainOutput;
@@ -202,8 +230,21 @@ export async function think(
     return ok;
   });
   // Normalise setup tags; drop unknown values rather than trusting them.
+  // Clamp per-trade SL/TP to safe bounds; drop a pair whose target sits at/below
+  // the stop (bad R:R) so the trade falls back to the balanced config defaults.
+  const clampPct = (v: unknown, lo: number, hi: number): number | undefined => {
+    const n = Number(v);
+    if (!Number.isFinite(n) || n <= 0) return undefined;
+    return Math.min(hi, Math.max(lo, n));
+  };
   for (const d of parsed.decisions) {
     if (d.setup && !setupSet.has(d.setup)) d.setup = undefined;
+    d.stopLossPct = clampPct(d.stopLossPct, 0.5, 8);
+    d.takeProfitPct = clampPct(d.takeProfitPct, 1, 25);
+    if (d.stopLossPct && d.takeProfitPct && d.takeProfitPct <= d.stopLossPct) {
+      d.stopLossPct = undefined;
+      d.takeProfitPct = undefined;
+    }
   }
   return parsed;
 }
