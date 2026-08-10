@@ -207,6 +207,24 @@ export function buildPerfHint(closed: ClosedTrade[]): string {
   return lines.join("\n");
 }
 
+/**
+ * Realised metrics grouped by SETUP — the input to the Expected-Value gate. Each
+ * setup's `expectancyR` is its average R-multiple (= win%×avgWinR − loss%×avgLossR,
+ * costs already reflected in realised P/L), i.e. its expected value per unit risk.
+ */
+export function expectancyBySetup(closed: ClosedTrade[]): Map<string, Metrics> {
+  const bySetup = new Map<string, ClosedTrade[]>();
+  for (const t of closed) {
+    const k = t.open.setup ?? "未标注";
+    let arr = bySetup.get(k);
+    if (!arr) bySetup.set(k, (arr = []));
+    arr.push(t);
+  }
+  const out = new Map<string, Metrics>();
+  for (const [k, ts] of bySetup) out.set(k, metrics(ts));
+  return out;
+}
+
 /** Build the Chinese analytics report. Pure over the audit log — no live calls. */
 export async function buildStatsReport(): Promise<string> {
   const { closed, stillOpen } = await loadTrades();

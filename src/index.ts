@@ -12,7 +12,7 @@ import { applyRisk, type RiskResult } from "./risk/guard.js";
 import { checkCircuitBreakers, type BreakerStatus } from "./risk/breakers.js";
 import { notify, notifyEnabled, notifyProvider, telegramFindChatIds } from "./notify/notify.js";
 import { buildDailyReport } from "./analytics/report.js";
-import { buildStatsReport, buildPerfHint } from "./analytics/stats.js";
+import { buildStatsReport, buildPerfHint, expectancyBySetup } from "./analytics/stats.js";
 import { computeReadiness, renderReadiness, maybeAlertReadiness } from "./analytics/readiness.js";
 import { walkForward, renderBacktest, type BacktestReport } from "./backtest/engine.js";
 import { loadTrades } from "./analytics/trades.js";
@@ -358,6 +358,15 @@ async function runCycle(client: CapitalClient): Promise<void> {
   }
 
   // The risk gate decides what is actually permitted (halted opens if breached).
+  // Expected-Value gate input: per-setup realised expectancy (R) from the ledger.
+  const setupEv = new Map(
+    [...expectancyBySetup(ledger)].map(([k, m]) => [k, { n: m.n, evR: m.expectancyR }]),
+  );
+  for (const [setup, ev] of setupEv) {
+    if (ev.evR !== null && ev.n >= config.risk.minEvSample && ev.evR < config.risk.minEvR) {
+      log.warn(`📉 期望值闸门：打法「${setup}」近${ev.n}笔期望 ${ev.evR.toFixed(2)}R 为负 → 暂停`);
+    }
+  }
   const risk = applyRisk(
     decisions,
     account,
@@ -365,6 +374,7 @@ async function runCycle(client: CapitalClient): Promise<void> {
     markets,
     { active: breakers.active, reason: breakers.reason },
     breakers.consecutiveLosses,
+    setupEv,
   );
   for (const rj of risk.rejected) log.warn(`  Rejected ${rj.epic}: ${rj.reason}`);
 

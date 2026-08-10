@@ -50,6 +50,7 @@ export function applyRisk(
   markets: Map<string, MarketSnapshot>,
   halt: Halt = { active: false, reason: "" },
   consecutiveLosses = 0,
+  setupEv: Map<string, { n: number; evR: number | null }> = new Map(),
 ): RiskResult {
   const result: RiskResult = { approved: [], closes: [], rejected: [] };
   const r = config.risk;
@@ -132,6 +133,20 @@ export function applyRisk(
         reason: `综合评分 ${round(signalScore)} 低于门槛 ${r.minSignalScore}（无统计优势，不交易）`,
       });
       continue;
+    }
+
+    // Expected-Value gate: once a setup has enough realised trades, refuse it if
+    // its measured expectancy (avg R) has gone negative — stop feeding a losing
+    // playbook no matter how confident the AI is. Thin samples are never gated.
+    if (d.setup) {
+      const ev = setupEv.get(d.setup);
+      if (ev && ev.evR !== null && ev.n >= r.minEvSample && ev.evR < r.minEvR) {
+        result.rejected.push({
+          epic: d.epic,
+          reason: `打法「${d.setup}」近${ev.n}笔实盘期望 ${ev.evR.toFixed(2)}R 为负（无统计优势），暂停该打法`,
+        });
+        continue;
+      }
     }
 
     if (positions.some((p) => p.epic === d.epic)) {

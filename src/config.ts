@@ -100,6 +100,12 @@ export const config = {
     // Minimum composite opportunity score (0-100) to trade at all. Below this the
     // setup lacks a real edge → no trade. Above it, size scales with the score.
     minSignalScore: num("MIN_SIGNAL_SCORE", 55),
+    // Expected-Value gate: once a SETUP has ≥ MIN_EV_SAMPLE scored round-trips,
+    // block new trades of that setup if its realised expectancy (avg R-multiple =
+    // win%×avgWinR − loss%×avgLossR, costs already in realised P/L) is below
+    // MIN_EV_R. Only enforced with enough data — no gating on thin samples.
+    minEvSample: num("MIN_EV_SAMPLE", 8),
+    minEvR: num("MIN_EV_R", 0),
     // Position-sizing mode:
     //   "capital" = DYNAMIC RISK-BASED sizing: risk-per-trade (scaled by signal
     //               strength) is the control; capital % is only a utilisation

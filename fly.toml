@@ -43,6 +43,10 @@ primary_region = "iad"
   # Composite opportunity score (0-100) gate: below this = no edge = no trade.
   # Above it, position size scales with the score (only high-quality = big size).
   MIN_SIGNAL_SCORE = "55"
+  # Expected-Value gate: once a setup has ≥ MIN_EV_SAMPLE realised trades, block it
+  # if its measured expectancy (avg R) < MIN_EV_R. Stops feeding a losing playbook.
+  MIN_EV_SAMPLE = "8"
+  MIN_EV_R = "0"
 
   # Circuit breakers (portfolio-level guard — always on)
   RISK_PER_TRADE_PCT = "0.5"
