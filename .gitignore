@@ -4,3 +4,6 @@ dist/
 *.log
 # trades.log.jsonl is the durable trade ledger — tracked on purpose, committed
 # back by the trade workflow so analytics accumulate across cloud runs.
+# The brain's persistent learning memory — runtime state (lives on the Fly
+# volume in prod), not source. Don't commit local-run artifacts.
+brain-memory.json

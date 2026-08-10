@@ -8,11 +8,17 @@ export interface NewsItem {
   summary?: string;
 }
 
-// Free financial RSS feeds used when no NEWS_API_KEY is configured.
+// Free financial RSS feeds used when no NEWS_API_KEY is configured. A broad,
+// global spread (US + world + markets/econ) so the brain "reads the whole market".
+// Unreachable feeds are tolerated (fetchRss skips failures and de-dupes).
 const RSS_FEEDS = [
   { url: "https://feeds.a.dj.com/rss/RSSMarketsMain.xml", source: "WSJ Markets" },
-  { url: "https://www.cnbc.com/id/100003114/device/rss/rss.html", source: "CNBC" },
+  { url: "https://feeds.a.dj.com/rss/RSSWorldNews.xml", source: "WSJ World" },
+  { url: "https://www.cnbc.com/id/100003114/device/rss/rss.html", source: "CNBC Finance" },
+  { url: "https://www.cnbc.com/id/100727362/device/rss/rss.html", source: "CNBC Economy" },
   { url: "https://feeds.marketwatch.com/marketwatch/topstories/", source: "MarketWatch" },
+  { url: "https://finance.yahoo.com/news/rssindex", source: "Yahoo Finance" },
+  { url: "https://www.investing.com/rss/news.rss", source: "Investing.com" },
 ];
 
 function stripTags(s: string): string {
@@ -46,23 +52,26 @@ function parseRss(xml: string, source: string, limit: number): NewsItem[] {
   return items;
 }
 
-async function fetchRss(perFeed = 8): Promise<NewsItem[]> {
-  const all: NewsItem[] = [];
-  for (const feed of RSS_FEEDS) {
-    try {
-      const res = await fetch(feed.url, {
-        headers: { "User-Agent": "capitaltinking/0.1" },
-      });
-      if (!res.ok) {
-        log.warn(`RSS ${feed.source} -> ${res.status}`);
-        continue;
+async function fetchRss(perFeed = 6): Promise<NewsItem[]> {
+  // Fetch feeds in parallel so more sources don't slow the cycle down.
+  const results = await Promise.all(
+    RSS_FEEDS.map(async (feed) => {
+      try {
+        const res = await fetch(feed.url, {
+          headers: { "User-Agent": "capitaltinking/0.1" },
+        });
+        if (!res.ok) {
+          log.warn(`RSS ${feed.source} -> ${res.status}`);
+          return [] as NewsItem[];
+        }
+        return parseRss(await res.text(), feed.source, perFeed);
+      } catch (e) {
+        log.warn(`RSS ${feed.source} failed:`, (e as Error).message);
+        return [] as NewsItem[];
       }
-      all.push(...parseRss(await res.text(), feed.source, perFeed));
-    } catch (e) {
-      log.warn(`RSS ${feed.source} failed:`, (e as Error).message);
-    }
-  }
-  return all;
+    }),
+  );
+  return results.flat();
 }
 
 async function fetchNewsApi(limit: number): Promise<NewsItem[]> {
@@ -83,7 +92,7 @@ async function fetchNewsApi(limit: number): Promise<NewsItem[]> {
 }
 
 /** Fetch today's latest market news from the best available source. */
-export async function fetchLatestNews(limit = 25): Promise<NewsItem[]> {
+export async function fetchLatestNews(limit = 30): Promise<NewsItem[]> {
   let items: NewsItem[];
   if (config.news.apiKey) {
     try {

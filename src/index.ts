@@ -6,6 +6,7 @@ import { think, type BrainOutput } from "./brain/deepseek.js";
 import { callQwen } from "./brain/client.js";
 import { computeIndicators } from "./brain/indicators.js";
 import { combineBrains, type EnsembleResult } from "./brain/ensemble.js";
+import { loadBrainMemory, updateBrainMemory } from "./brain/memory.js";
 import { challenge, applyDevilVeto, type DevilResult } from "./brain/devil.js";
 import { applyRisk, type RiskResult } from "./risk/guard.js";
 import { checkCircuitBreakers, type BreakerStatus } from "./risk/breakers.js";
@@ -109,6 +110,7 @@ const round2 = (n: number) => Math.round(n * 100) / 100;
 const NOTIFY_INTERVAL_MS = config.notify.intervalMinutes * 60_000;
 let lastNotifyAt = 0;
 let lastBalance: number | undefined;
+let lastThesis: string | undefined; // brain's latest global-market view, for the check-in
 const notifyQueue: string[] = [];
 
 function queueNotification(msg: string): void {
@@ -129,11 +131,13 @@ async function flushNotifications(opts: { force?: boolean } = {}): Promise<void>
     const header = `🧠 capitaltinking 定时汇报（每 ${config.notify.intervalMinutes} 分钟）· ${stamp}`;
     body = [header, ...notifyQueue].join("\n\n———\n\n");
   } else {
-    // Heartbeat: nothing traded this window — a brief "still watching" check-in.
+    // Heartbeat: nothing traded this window — a brief "still watching" check-in,
+    // with the brain's current global-market view so you see it's still learning.
     body =
       `🧠 capitaltinking 定时汇报（每 ${config.notify.intervalMinutes} 分钟）· ${stamp}\n` +
       (lastBalance != null ? `账户余额：${lastBalance}\n` : "") +
-      "😴 期间没有触发交易，持续观望中。";
+      "😴 期间没有触发交易，持续观望中。" +
+      (lastThesis ? `\n\n📊 当前市场判断：${lastThesis}` : "");
   }
   await notify(body);
   notifyQueue.length = 0;
@@ -260,6 +264,13 @@ async function runCycle(client: CapitalClient): Promise<void> {
   // that actually pay (and away from losers) — a lightweight learning loop.
   const perfHint = buildPerfHint(ledger);
   if (perfHint) log.info(`Perf feedback to brain:\n${perfHint}`);
+  // Load the brain's persistent memory (running market thesis + accumulated
+  // lessons) so it keeps learning across cycles instead of thinking from scratch.
+  const memory = await loadBrainMemory();
+  if (memory.thesis) lastThesis = memory.thesis;
+  if (memory.thesis || memory.lessons.length) {
+    log.info(`Brain memory: ${memory.lessons.length} lessons, thesis ${memory.thesis ? "set" : "empty"}`);
+  }
   log.info(
     `Risk budget: 今日 ${breakers.dailyPnl} (亏${breakers.dailyLossPct}%) / 近7日 ${breakers.weeklyPnl} (亏${breakers.weeklyLossPct}%) / 回撤 ${breakers.drawdownPct}%`,
   );
@@ -297,7 +308,7 @@ async function runCycle(client: CapitalClient): Promise<void> {
   }
 
   // The primary brain (DeepSeek) thinks.
-  const brain = await think(news, snapshots, positions, account.balance, perfHint);
+  const brain = await think(news, snapshots, positions, account.balance, perfHint, memory);
   log.info(`Market summary: ${brain.marketSummary}`);
   if (brain.analysis) log.info(`Analysis: ${brain.analysis}`);
   for (const d of brain.decisions) {
@@ -312,7 +323,7 @@ async function runCycle(client: CapitalClient): Promise<void> {
   let second: BrainOutput | undefined;
   if (config.secondBrain.enabled) {
     try {
-      second = await think(news, snapshots, positions, account.balance, perfHint, callQwen);
+      second = await think(news, snapshots, positions, account.balance, perfHint, memory, callQwen);
       ensemble = combineBrains(brain, second, config.secondBrain.mode);
       decisions = ensemble.decisions;
       log.info(
@@ -436,6 +447,17 @@ async function runCycle(client: CapitalClient): Promise<void> {
 
   if (risk.approved.length === 0 && risk.closes.length === 0) {
     log.info("No trades this cycle — holding.");
+  }
+
+  // Continuous learning: fold this cycle's updated market thesis + new lessons
+  // into the persistent brain memory, so the next cycle reasons from accumulated
+  // understanding. Fail-safe: on a write hiccup the prior memory simply stands.
+  if (brain.thesis || (brain.lessons && brain.lessons.length)) {
+    const updated = await updateBrainMemory(memory, { thesis: brain.thesis, lessons: brain.lessons });
+    lastThesis = updated.thesis || lastThesis;
+    if (brain.lessons?.length) log.info(`🧠 学到新经验：${brain.lessons.join(" | ")}`);
+    if (brain.thesis) log.info(`🧠 更新市场判断：${brain.thesis}`);
+    log.info(`Brain memory now holds ${updated.lessons.length} lessons.`);
   }
 
   // Notify. In "actions" mode, stay quiet on pure-HOLD cycles. Messages are

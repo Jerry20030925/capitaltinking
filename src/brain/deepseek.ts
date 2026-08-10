@@ -2,6 +2,7 @@ import { config } from "../config.js";
 import { log } from "../logger.js";
 import { callDeepSeek, extractJson } from "./client.js";
 import { describeIndicators } from "./indicators.js";
+import { describeBrainMemory, type BrainMemory } from "./memory.js";
 import type { NewsItem } from "../news/fetch.js";
 import type { MarketSnapshot, OpenPosition } from "../capital/client.js";
 
@@ -72,12 +73,24 @@ export interface BrainOutput {
   analysis?: string; // the model's step-by-step reasoning (chain of thought)
   regime: Regime; // overall market regime this cycle
   decisions: TradeDecision[];
+  // --- continuous-learning outputs (persisted to brain memory across cycles) ---
+  thesis?: string; // updated running view of the global market
+  lessons?: string[]; // new, reusable lessons distilled this cycle
 }
 
-const SYSTEM_PROMPT = `你是一名严谨、专业的宏观交易分析师，为一位在 Capital.com 交易的散户服务。
-你会收到：今日财经新闻、允许交易的品种清单、实时价格与当日涨跌幅、以及用户当前持仓（含浮动盈亏）。
+const SYSTEM_PROMPT = `你是一名拥有十余年实战经验的【专业交易员】，曾在对冲基金担任宏观交易主管，
+如今为一位在 Capital.com 交易的账户实盘操盘。你以严格的风险管理、稳定的长期正期望、
+以及“让利润奔跑、快速止损、只在优势明显时重仓”的纪律著称。你不是纸上谈兵的分析师——
+你要为真实盈亏负责：控制回撤、抓住高胜算机会、避开没有优势的噪音。
 
-请按以下分析框架，一步步认真思考（把思考过程写进 analysis 字段）：
+你还是一名【持续学习者】：你会持续研究全球市场，把每一轮的新闻、行情、你自己的实盘战绩
+与过往经验不断内化，逐周期让判断越来越准。系统会把你上一轮沉淀的“市场判断(thesis)”与
+“交易经验(lessons)”回灌给你——请在此基础上迭代，而不是从零开始。
+
+你会收到：今日全球财经新闻、允许交易的品种清单、实时价格与当日涨跌幅、技术指标、
+你的历史实盘战绩复盘、你过往沉淀的市场判断与经验、以及当前持仓（含浮动盈亏）。
+
+请按以下框架，像职业交易员那样一步步思考（把思考过程写进 analysis 字段）：
 
 1. 宏观环境（regime）：先判断当前整体市场情绪——避险(risk-off) 还是 冒险(risk-on)？
    利率、地缘政治、通胀、美元强弱等主线是什么？这决定各资产的方向倾向。
@@ -125,6 +138,14 @@ const SYSTEM_PROMPT = `你是一名严谨、专业的宏观交易分析师，为
    momentum（顺势动量）、breakout（突破）、mean-reversion（均值回归/抄底摸顶）、
    news（纯消息驱动）、safe-haven（避险资金流）、macro（宏观数据/利率驱动）。
    HOLD/CLOSE 不需要 setup。
+8. 持续学习（把全球市场当作要终身钻研的对象，务必认真做）：综合【今日新闻/行情】、
+   【你的历史实盘战绩复盘】、以及【你过往沉淀的 thesis/lessons】，产出：
+   - thesis：更新你对全球市场的总体判断（3-5 句）——当前主线驱动（利率/通胀/地缘/美元）、
+     各大类资产（贵金属、股指、原油、加密、外汇）的倾向、以及最大的风险点。要在旧判断上迭代，
+     若市场变了就修正，并简述“为何改变”。
+   - lessons：提炼 1-3 条【新的、可复用、可操作】的经验教训（不要空话）。优先总结：
+     哪种信号/打法在哪种市场状态下让你赚钱或亏钱、什么情况下该放弃交易、止损止盈的取舍等。
+     若本轮确实没有值得沉淀的新经验，可返回空数组。
 
 约束：
 - 只允许操作清单内的品种；每个允许品种给出且仅给出一个决策。
@@ -134,13 +155,15 @@ const SYSTEM_PROMPT = `你是一名严谨、专业的宏观交易分析师，为
 只输出一个 JSON 对象（不要 markdown 代码块），结构如下：
 {
   "marketSummary": "2-3 句今日新闻与市场情绪总览",
-  "analysis": "你按上面 1-7 步的推理过程",
+  "analysis": "你按上面 1-8 步的推理过程",
   "regime": "risk-off",
   "decisions": [
     { "epic": "GOLD", "action": "BUY|SELL|CLOSE|HOLD", "confidence": 0.0-1.0, "setup": "safe-haven", "stopLossPct": 1.5, "takeProfitPct": 4.0, "reasoning": "理由，引用具体新闻与动量" }
-  ]
+  ],
+  "thesis": "3-5 句：你对全球市场的最新总体判断（在旧判断上迭代）",
+  "lessons": ["本轮沉淀的可复用经验1", "经验2"]
 }
-（stopLossPct/takeProfitPct 仅 BUY/SELL 需要；HOLD/CLOSE 可省略。）`;
+（stopLossPct/takeProfitPct 仅 BUY/SELL 需要；HOLD/CLOSE 可省略。lessons 无新经验可为空数组。）`;
 
 function buildUserPrompt(
   news: NewsItem[],
@@ -149,6 +172,7 @@ function buildUserPrompt(
   balance: number,
   allowedEpics: string[],
   perfHint: string,
+  memory: string,
 ): string {
   const newsBlock = news
     .map((n, i) => `${i + 1}. [${n.source}] ${n.title}${n.summary ? ` — ${n.summary}` : ""}`)
@@ -180,11 +204,12 @@ function buildUserPrompt(
   const perfBlock = perfHint
     ? `\n你近期的实盘复盘（据此优化打法与信心，倾向近期正期望的打法、回避持续亏损的打法；别机械照搬）：\n${perfHint}\n`
     : "";
+  const memoryBlock = memory ? `\n【你过往沉淀的记忆，请在此基础上迭代】\n${memory}\n` : "";
 
   return `允许交易的品种：${allowedEpics.join(", ")}
 账户余额：${balance}
 最大持仓数：${config.risk.maxOpenPositions}，单品种最大手数：${config.risk.maxPositionSize}
-${perfBlock}
+${memoryBlock}${perfBlock}
 今日新闻标题：
 ${newsBlock}
 
@@ -203,11 +228,20 @@ export async function think(
   positions: OpenPosition[],
   balance: number,
   perfHint: string = "",
+  memory: BrainMemory | undefined = undefined,
   call: (system: string, user: string) => Promise<string> = callDeepSeek,
 ): Promise<BrainOutput> {
   const content = await call(
     SYSTEM_PROMPT,
-    buildUserPrompt(news, markets, positions, balance, config.risk.allowedEpics, perfHint),
+    buildUserPrompt(
+      news,
+      markets,
+      positions,
+      balance,
+      config.risk.allowedEpics,
+      perfHint,
+      memory ? describeBrainMemory(memory) : "",
+    ),
   );
 
   let parsed: BrainOutput;
@@ -246,5 +280,15 @@ export async function think(
       d.takeProfitPct = undefined;
     }
   }
+
+  // Continuous-learning outputs: keep only well-formed thesis/lessons.
+  parsed.thesis =
+    typeof parsed.thesis === "string" && parsed.thesis.trim() ? parsed.thesis.trim() : undefined;
+  parsed.lessons = Array.isArray(parsed.lessons)
+    ? parsed.lessons
+        .filter((l): l is string => typeof l === "string" && l.trim().length > 0)
+        .slice(0, 5)
+    : undefined;
+
   return parsed;
 }
