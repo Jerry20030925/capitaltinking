@@ -45,6 +45,22 @@ export const config = {
     baseUrl: "https://api.deepseek.com",
   },
 
+  // Second Chief Trader — Qwen (a DIFFERENT model, for genuine ensemble
+  // diversity). When both brains agree, conviction is higher; disagreement is a
+  // caution signal. Enabled automatically when QWEN_API_KEY is present.
+  secondBrain: {
+    apiKey: process.env.QWEN_API_KEY ?? "",
+    baseUrl:
+      process.env.QWEN_BASE_URL ?? "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+    model: process.env.QWEN_MODEL ?? "qwen-plus",
+    enabled: !!process.env.QWEN_API_KEY && bool("SECOND_BRAIN", true),
+    // "observe" = record both brains + agreement, trade the primary's calls (A/B).
+    // "enforce" = a BUY/SELL needs BOTH brains to agree, else HOLD.
+    mode: ((process.env.SECOND_BRAIN_MODE ?? "observe").toLowerCase() === "enforce"
+      ? "enforce"
+      : "observe") as "enforce" | "observe",
+  },
+
   brain: {
     // Devil's Advocate: a second AI that argues against every open proposal.
     devilAdvocate: bool("DEVIL_ADVOCATE", true),

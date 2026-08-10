@@ -20,6 +20,10 @@ export interface ApprovedTrade {
   counterConfidence?: number;
   devilVerdict?: DevilVerdict;
   wouldVeto?: boolean;
+  // Second-brain (Qwen) ensemble judgment, for the ledger / A/B.
+  secondAction?: "BUY" | "SELL" | "CLOSE" | "HOLD";
+  secondConfidence?: number;
+  secondAgree?: boolean;
 }
 
 export interface RiskResult {
@@ -193,6 +197,9 @@ export function applyRisk(
       counterConfidence: d.counterConfidence,
       devilVerdict: d.devilVerdict,
       wouldVeto: d.wouldVeto,
+      secondAction: d.secondAction,
+      secondConfidence: d.secondConfidence,
+      secondAgree: d.secondAgree,
     });
     projectedOpen++;
   }

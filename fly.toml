@@ -17,6 +17,10 @@ primary_region = "iad"
   TRADING_MODE = "demo"
   DRY_RUN = "false"
   DEEPSEEK_MODEL = "deepseek-reasoner"
+  # Second brain (Qwen) — non-secrets here; QWEN_API_KEY via `fly secrets set`.
+  QWEN_BASE_URL = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
+  QWEN_MODEL = "qwen-plus"
+  SECOND_BRAIN_MODE = "observe"
   ALLOWED_EPICS = "GOLD,SILVER,US500,OIL_CRUDE,BTCUSD,EURUSD"
 
   MAX_POSITION_SIZE = "1000"

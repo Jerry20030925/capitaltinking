@@ -213,6 +213,19 @@ export async function buildStatsReport(): Promise<string> {
     ...renderGroup("按信心档", groupBy(closed, (t) => confidenceBand(t.open.confidence))),
   );
 
+  // Two-brain (DeepSeek + Qwen) agreement A/B, if the second brain ran.
+  if (closed.some((t) => t.open.secondAgree !== undefined)) {
+    lines.push(
+      ...renderGroup(
+        "按双脑一致性 (DeepSeek+Qwen)",
+        groupBy(
+          closed.filter((t) => t.open.secondAgree !== undefined),
+          (t) => (t.open.secondAgree ? "两脑一致" : "两脑分歧"),
+        ),
+      ),
+    );
+  }
+
   lines.push(``, `提醒：模拟账户的胜率无法直接复制到真钱，重点看样本量、一致性与盈亏比。`);
   return lines.join("\n");
 }

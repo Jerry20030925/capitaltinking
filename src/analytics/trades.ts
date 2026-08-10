@@ -32,6 +32,8 @@ export interface OpenRecord {
   counterConfidence?: number;
   devilVerdict?: DevilVerdict;
   wouldVeto?: boolean;
+  // Second-brain (Qwen) ensemble judgment (for two-brain-agreement A/B).
+  secondAgree?: boolean;
 }
 
 export interface CloseRecord {
@@ -94,6 +96,7 @@ function toOpen(e: Record<string, any>): OpenRecord {
     counterConfidence: typeof e.counterConfidence === "number" ? e.counterConfidence : undefined,
     devilVerdict: e.devilVerdict,
     wouldVeto: typeof e.wouldVeto === "boolean" ? e.wouldVeto : undefined,
+    secondAgree: typeof e.secondAgree === "boolean" ? e.secondAgree : undefined,
   };
 }
 

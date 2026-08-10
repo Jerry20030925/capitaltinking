@@ -54,6 +54,10 @@ export interface TradeDecision {
   counterConfidence?: number; // 0..1: how hard the critic argued against this trade
   devilVerdict?: "uphold" | "reduce" | "veto";
   wouldVeto?: boolean; // true if the critic would block it (recorded even in observe mode)
+  // --- annotations added by the second-brain ensemble (see brain/ensemble.ts) ---
+  secondAction?: "BUY" | "SELL" | "CLOSE" | "HOLD"; // Qwen's call for this epic
+  secondConfidence?: number;
+  secondAgree?: boolean; // did both brains pick the same action?
 }
 
 export interface BrainOutput {
@@ -171,8 +175,9 @@ export async function think(
   markets: MarketSnapshot[],
   positions: OpenPosition[],
   balance: number,
+  call: (system: string, user: string) => Promise<string> = callDeepSeek,
 ): Promise<BrainOutput> {
-  const content = await callDeepSeek(
+  const content = await call(
     SYSTEM_PROMPT,
     buildUserPrompt(news, markets, positions, balance, config.risk.allowedEpics),
   );

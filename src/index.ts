@@ -2,8 +2,10 @@ import { config } from "./config.js";
 import { log, audit } from "./logger.js";
 import { CapitalClient, type MarketSnapshot } from "./capital/client.js";
 import { fetchLatestNews } from "./news/fetch.js";
-import { think } from "./brain/deepseek.js";
+import { think, type BrainOutput } from "./brain/deepseek.js";
+import { callQwen } from "./brain/client.js";
 import { computeIndicators } from "./brain/indicators.js";
+import { combineBrains, type EnsembleResult } from "./brain/ensemble.js";
 import { challenge, applyDevilVeto, type DevilResult } from "./brain/devil.js";
 import { applyRisk, type RiskResult } from "./risk/guard.js";
 import { checkCircuitBreakers, type BreakerStatus } from "./risk/breakers.js";
@@ -11,7 +13,6 @@ import { notify, notifyEnabled, notifyProvider, telegramFindChatIds } from "./no
 import { buildDailyReport } from "./analytics/report.js";
 import { buildStatsReport } from "./analytics/stats.js";
 import { loadTrades } from "./analytics/trades.js";
-import type { BrainOutput } from "./brain/deepseek.js";
 import type { OpenPosition, Transaction } from "./capital/client.js";
 
 function banner() {
@@ -28,6 +29,9 @@ function banner() {
   }
   log.info(`  allowed: ${config.risk.allowedEpics.join(", ")}`);
   log.info(
+    `  brains: DeepSeek(${config.deepseek.model})${config.secondBrain.enabled ? ` + Qwen(${config.secondBrain.model}, ${config.secondBrain.mode})` : ""}`,
+  );
+  log.info(
     `  devil: ${config.brain.devilAdvocate ? `on (${config.brain.devilMode}, veto≥${config.brain.vetoThreshold})` : "off"}`,
   );
   log.info(
@@ -43,6 +47,7 @@ function buildNotification(
   balance: number,
   devil?: DevilResult,
   breakers?: BreakerStatus,
+  ensemble?: EnsembleResult,
 ): string {
   const tag = config.dryRun ? "模拟(不下单)" : config.mode === "live" ? "真钱 💰" : "模拟账户";
   const dir = (d: "BUY" | "SELL") => (d === "BUY" ? "买入" : "卖出");
@@ -50,6 +55,14 @@ function buildNotification(
 
   if (breakers?.active) {
     lines.push("", `🛑 风控熔断（暂停开新仓）：${breakers.reason}`);
+  }
+
+  if (ensemble) {
+    const dis = ensemble.agreements.filter((a) => !a.agree);
+    if (dis.length) {
+      lines.push("", "⚖️ 双脑分歧：");
+      for (const a of dis) lines.push(`• ${a.epic}：DeepSeek ${a.primary} / Qwen ${a.second}`);
+    }
   }
 
   if (brain.marketSummary && brain.marketSummary !== "parse-error") {
@@ -239,7 +252,7 @@ async function runCycle(client: CapitalClient): Promise<void> {
     }
   }
 
-  // The brain thinks.
+  // The primary brain (DeepSeek) thinks.
   const brain = await think(news, snapshots, positions, account.balance);
   log.info(`Market summary: ${brain.marketSummary}`);
   if (brain.analysis) log.info(`Analysis: ${brain.analysis}`);
@@ -247,13 +260,33 @@ async function runCycle(client: CapitalClient): Promise<void> {
     log.info(`  DeepSeek: ${d.epic} -> ${d.action} (conf ${d.confidence.toFixed(2)}) — ${d.reasoning}`);
   }
 
-  // The Devil's Advocate argues against every open proposal. In "observe" mode
-  // it only records its verdict (trades still open) so we can A/B the veto; in
-  // "enforce" mode a high-conviction veto downgrades the trade to HOLD.
   let decisions = brain.decisions;
+
+  // Second brain (Qwen) — an independent Chief Trader on a DIFFERENT model.
+  // observe: record both + agreement; enforce: a trade needs both to agree.
+  let ensemble: EnsembleResult | undefined;
+  let second: BrainOutput | undefined;
+  if (config.secondBrain.enabled) {
+    try {
+      second = await think(news, snapshots, positions, account.balance, callQwen);
+      ensemble = combineBrains(brain, second, config.secondBrain.mode);
+      decisions = ensemble.decisions;
+      log.info(
+        `  Qwen(${config.secondBrain.model}): ${second.decisions.map((d) => `${d.epic} ${d.action}`).join(", ")}`,
+      );
+      for (const a of ensemble.agreements.filter((x) => !x.agree)) {
+        log.info(`  ⚖️ 双脑分歧 ${a.epic}: DeepSeek ${a.primary} vs Qwen ${a.second}`);
+      }
+    } catch (e) {
+      log.warn("Second brain (Qwen) failed, using DeepSeek only:", (e as Error).message);
+    }
+  }
+
+  // The Devil's Advocate argues against every open proposal (post-ensemble). In
+  // "observe" mode it only records its verdict; in "enforce" a veto -> HOLD.
   let devil: DevilResult | undefined;
   if (config.brain.devilAdvocate) {
-    const critiques = await challenge(brain, news, snapshots);
+    const critiques = await challenge({ ...brain, decisions }, news, snapshots);
     devil = applyDevilVeto(decisions, critiques, config.brain.vetoThreshold, config.brain.devilMode);
     decisions = devil.decisions;
     const tag = config.brain.devilMode === "enforce" ? "否决" : "标记否决(观察)";
@@ -279,6 +312,9 @@ async function runCycle(client: CapitalClient): Promise<void> {
     balance: account.balance,
     breakers,
     regime: brain.regime,
+    secondBrain: ensemble
+      ? { model: config.secondBrain.model, mode: config.secondBrain.mode, decisions: second?.decisions, agreements: ensemble.agreements, disagreements: ensemble.disagreements }
+      : undefined,
     summary: brain.marketSummary,
     decisions: brain.decisions, // original Chief Trader judgment (pre-veto)
     devil: devil
@@ -361,7 +397,7 @@ async function runCycle(client: CapitalClient): Promise<void> {
   // Notify. In "actions" mode, stay quiet on pure-HOLD cycles.
   const hadAction = risk.approved.length > 0 || risk.closes.length > 0;
   if (notifyEnabled() && (config.notify.verbosity === "all" || hadAction)) {
-    await notify(buildNotification(brain, risk, account.balance, devil, breakers));
+    await notify(buildNotification(brain, risk, account.balance, devil, breakers, ensemble));
   }
 }
 
