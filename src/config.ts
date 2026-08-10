@@ -97,6 +97,9 @@ export const config = {
     stopLossPct: num("STOP_LOSS_PCT", 2),
     takeProfitPct: num("TAKE_PROFIT_PCT", 4),
     minConfidence: num("MIN_CONFIDENCE", 0.65),
+    // Minimum composite opportunity score (0-100) to trade at all. Below this the
+    // setup lacks a real edge → no trade. Above it, size scales with the score.
+    minSignalScore: num("MIN_SIGNAL_SCORE", 55),
     // Position-sizing mode:
     //   "capital" = DYNAMIC RISK-BASED sizing: risk-per-trade (scaled by signal
     //               strength) is the control; capital % is only a utilisation

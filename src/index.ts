@@ -357,10 +357,14 @@ async function runCycle(client: CapitalClient): Promise<void> {
   }
 
   // The risk gate decides what is actually permitted (halted opens if breached).
-  const risk = applyRisk(decisions, account, positions, markets, {
-    active: breakers.active,
-    reason: breakers.reason,
-  });
+  const risk = applyRisk(
+    decisions,
+    account,
+    positions,
+    markets,
+    { active: breakers.active, reason: breakers.reason },
+    breakers.consecutiveLosses,
+  );
   for (const rj of risk.rejected) log.warn(`  Rejected ${rj.epic}: ${rj.reason}`);
 
   await audit({

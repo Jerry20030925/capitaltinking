@@ -49,9 +49,15 @@ export function applyRisk(
   positions: OpenPosition[],
   markets: Map<string, MarketSnapshot>,
   halt: Halt = { active: false, reason: "" },
+  consecutiveLosses = 0,
 ): RiskResult {
   const result: RiskResult = { approved: [], closes: [], rejected: [] };
   const r = config.risk;
+
+  // Cold-streak position multiplier: shrink size as losses stack up (2→×0.7,
+  // 3→×0.5); the ≥4 case is already halted by the circuit breaker. Protecting
+  // compounding — one big drawdown erases dozens of wins.
+  const streakMultiplier = consecutiveLosses >= 3 ? 0.5 : consecutiveLosses >= 2 ? 0.7 : 1;
 
   // Global guard: refuse to trade a nearly-empty account.
   if (account.balance < r.minAccountBalance) {
@@ -117,6 +123,17 @@ export function applyRisk(
       continue;
     }
 
+    // Quality gate: composite opportunity score (falls back to confidence×100).
+    // Below the floor the setup has no real edge → don't trade it at all.
+    const signalScore = d.score ?? d.confidence * 100;
+    if (signalScore < r.minSignalScore) {
+      result.rejected.push({
+        epic: d.epic,
+        reason: `综合评分 ${round(signalScore)} 低于门槛 ${r.minSignalScore}（无统计优势，不交易）`,
+      });
+      continue;
+    }
+
     if (positions.some((p) => p.epic === d.epic)) {
       result.rejected.push({ epic: d.epic, reason: "该品种已有持仓，不重复开仓" });
       continue;
@@ -155,10 +172,11 @@ export function applyRisk(
     const stopLevel = direction === "BUY" ? entry - slDist : entry + slDist;
     const profitLevel = direction === "BUY" ? entry + tpDist : entry - tpDist;
 
-    // Signal strength in 0..1 across the tradeable confidence band (min→full).
+    // Signal strength in 0..1 across the tradeable SCORE band (minScore→100), so
+    // position size tracks genuine opportunity quality, not just raw confidence.
     const equity = account.balance;
-    const span = Math.max(0.0001, 1 - r.minConfidence);
-    const strength = Math.min(1, Math.max(0, (d.confidence - r.minConfidence) / span));
+    const span = Math.max(0.0001, 100 - r.minSignalScore);
+    const strength = Math.min(1, Math.max(0, (signalScore - r.minSignalScore) / span));
 
     // Position sizing.
     let size: number;
@@ -172,7 +190,8 @@ export function applyRisk(
       // never a loss limit). This maximises expected-return-per-unit-risk.
       const riskPct = Math.min(
         r.maxTradeLossPct,
-        r.targetRiskMinPct + (r.targetRiskMaxPct - r.targetRiskMinPct) * strength,
+        (r.targetRiskMinPct + (r.targetRiskMaxPct - r.targetRiskMinPct) * strength) *
+          streakMultiplier,
       );
       const riskBudget = equity * (riskPct / 100);
       const riskPerUnit = market.contractSize * slDist;
@@ -190,7 +209,7 @@ export function applyRisk(
       if (size < market.minDealSize) size = market.minDealSize;
     } else if (r.dynamicSizing) {
       // Simple fixed risk-to-stop (SIZING_MODE=risk): loss-if-stopped ≈ RISK_PER_TRADE_PCT.
-      const budget = equity * (r.riskPerTradePct / 100) * (0.7 + 0.3 * strength);
+      const budget = equity * (r.riskPerTradePct / 100) * (0.7 + 0.3 * strength) * streakMultiplier;
       const riskPerUnit = market.contractSize * slDist;
       let raw = riskPerUnit > 0 ? budget / riskPerUnit : market.minDealSize;
       if (market.maxDealSize > 0) raw = Math.min(raw, market.maxDealSize);

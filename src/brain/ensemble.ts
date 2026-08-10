@@ -87,6 +87,7 @@ export function combineBrains(
           ...annotated,
           action: win.action,
           confidence: win.confidence,
+          score: win.score,
           setup: win.setup,
           stopLossPct: win.stopLossPct,
           takeProfitPct: win.takeProfitPct,

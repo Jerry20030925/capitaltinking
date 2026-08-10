@@ -51,6 +51,11 @@ export interface TradeDecision {
   confidence: number; // 0..1
   reasoning: string;
   setup?: Setup; // which playbook this trade expresses (for BUY/SELL)
+  // Composite OPPORTUNITY-QUALITY score 0-100: how strongly trend + technical +
+  // momentum + news + macro all line up. Drives position size — only genuinely
+  // high-quality (high-score) setups earn a big position; weak ones size down or
+  // don't trade. Falls back to confidence×100 when absent.
+  score?: number;
   // Per-trade, volatility-aware risk management (brain-chosen). Distances as a %
   // of entry. When present they OVERRIDE the fixed config SL/TP so each trade
   // gets an intelligent stop (wide enough to survive noise) and a target sized to
@@ -125,6 +130,12 @@ const SYSTEM_PROMPT = `你是一名拥有十余年实战经验的【专业交易
    - 合理范围：stopLossPct 约 0.5–8，takeProfitPct 约 1–25。不给则用系统默认值。
 5. 诚实定价信心：confidence 必须反映真实把握度，不确定就给低分并 HOLD。
    你无法、也绝不能保证盈利——不要编造不存在的把握。
+5.6 综合机会评分 score（0-100，决定仓位大小，务必认真给）：对每个 BUY/SELL，
+   综合【趋势】【技术面】【动量】【新闻】【宏观】五个维度的【共振程度】给一个 0-100 分：
+   五者高度一致、优势明显 → 85-100（可重仓）；多数一致 → 65-85（中等仓）；
+   仅个别支持、优势一般 → 55-65（小仓）；缺乏统计优势/相互矛盾 → <55（系统将直接不交易）。
+   记住：只有真正高质量、胜算高的机会才配得上大仓位；宁可错过，不要为了下大单虚高评分。
+   风险引擎仍会根据波动率/止损距离/当日回撤等把仓位进一步缩小，你无法绕过它。
 5.5 仓位与资金效率（重要）：系统会【根据当前可用资金】按你的 confidence 自动放大仓位——
    confidence 越高，投入的可用资金比例越大（高把握时可动用可观比例的可用资金），
    目标是在当前行情下把资金用足、最大化收益，而不是每次只买一点、收益也只有一点。
@@ -162,7 +173,7 @@ const SYSTEM_PROMPT = `你是一名拥有十余年实战经验的【专业交易
   "analysis": "你按上面 1-8 步的推理过程",
   "regime": "risk-off",
   "decisions": [
-    { "epic": "GOLD", "action": "BUY|SELL|CLOSE|HOLD", "confidence": 0.0-1.0, "setup": "safe-haven", "stopLossPct": 1.5, "takeProfitPct": 4.0, "reasoning": "理由，引用具体新闻与动量" }
+    { "epic": "GOLD", "action": "BUY|SELL|CLOSE|HOLD", "confidence": 0.0-1.0, "score": 0-100, "setup": "safe-haven", "stopLossPct": 1.5, "takeProfitPct": 4.0, "reasoning": "理由，引用具体新闻与动量" }
   ],
   "thesis": "3-5 句：你对全球市场的最新总体判断（在旧判断上迭代）",
   "lessons": ["本轮沉淀的可复用经验1", "经验2"],
@@ -278,6 +289,11 @@ export async function think(
   };
   for (const d of parsed.decisions) {
     if (d.setup && !setupSet.has(d.setup)) d.setup = undefined;
+    if (typeof d.score === "number" && Number.isFinite(d.score)) {
+      d.score = Math.min(100, Math.max(0, d.score));
+    } else {
+      d.score = undefined;
+    }
     d.stopLossPct = clampPct(d.stopLossPct, 0.5, 8);
     d.takeProfitPct = clampPct(d.takeProfitPct, 1, 25);
     if (d.stopLossPct && d.takeProfitPct && d.takeProfitPct <= d.stopLossPct) {

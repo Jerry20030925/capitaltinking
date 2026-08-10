@@ -40,6 +40,9 @@ primary_region = "iad"
   STOP_LOSS_PCT = "2"
   TAKE_PROFIT_PCT = "4"
   MIN_CONFIDENCE = "0.6"
+  # Composite opportunity score (0-100) gate: below this = no edge = no trade.
+  # Above it, position size scales with the score (only high-quality = big size).
+  MIN_SIGNAL_SCORE = "55"
 
   # Circuit breakers (portfolio-level guard — always on)
   RISK_PER_TRADE_PCT = "0.5"
