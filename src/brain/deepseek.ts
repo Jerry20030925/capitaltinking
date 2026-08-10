@@ -1,18 +1,64 @@
 import { config } from "../config.js";
 import { log } from "../logger.js";
+import { callDeepSeek, extractJson } from "./client.js";
 import type { NewsItem } from "../news/fetch.js";
 import type { MarketSnapshot, OpenPosition } from "../capital/client.js";
+
+/** Discrete market-regime label, used to group trades in the analytics engine. */
+export type Regime =
+  | "risk-on"
+  | "risk-off"
+  | "trending"
+  | "ranging"
+  | "high-vol"
+  | "news-driven"
+  | "panic"
+  | "normal";
+
+/** Per-trade setup archetype, so we can learn which playbooks actually pay. */
+export type Setup =
+  | "momentum"
+  | "breakout"
+  | "mean-reversion"
+  | "news"
+  | "safe-haven"
+  | "macro";
+
+export const REGIMES: readonly Regime[] = [
+  "risk-on",
+  "risk-off",
+  "trending",
+  "ranging",
+  "high-vol",
+  "news-driven",
+  "panic",
+  "normal",
+];
+export const SETUPS: readonly Setup[] = [
+  "momentum",
+  "breakout",
+  "mean-reversion",
+  "news",
+  "safe-haven",
+  "macro",
+];
 
 export interface TradeDecision {
   epic: string;
   action: "BUY" | "SELL" | "CLOSE" | "HOLD";
   confidence: number; // 0..1
   reasoning: string;
+  setup?: Setup; // which playbook this trade expresses (for BUY/SELL)
+  // --- annotations added by the Devil's Advocate stage (see brain/devil.ts) ---
+  counterConfidence?: number; // 0..1: how hard the critic argued against this trade
+  devilVerdict?: "uphold" | "reduce" | "veto";
+  wouldVeto?: boolean; // true if the critic would block it (recorded even in observe mode)
 }
 
 export interface BrainOutput {
   marketSummary: string;
   analysis?: string; // the model's step-by-step reasoning (chain of thought)
+  regime: Regime; // overall market regime this cycle
   decisions: TradeDecision[];
 }
 
@@ -38,17 +84,27 @@ const SYSTEM_PROMPT = `你是一名严谨、专业的宏观交易分析师，为
 5. 诚实定价信心：confidence 必须反映真实把握度，不确定就给低分并 HOLD。
    你无法、也绝不能保证盈利——不要编造不存在的把握。
 
+6. 市场状态标注（regime）：用一个词概括当前整体市场状态，只能从下列英文枚举中选一个：
+   risk-on（冒险情绪）、risk-off（避险情绪）、trending（单边趋势）、ranging（区间震荡）、
+   high-vol（高波动）、news-driven（消息驱动）、panic（恐慌）、normal（平常）。
+   这个标注会被系统用来长期统计"哪种市场状态下的交易更赚钱"，请如实标注。
+7. 每笔开仓标注打法（setup）：对每个 BUY/SELL 决策，标注它属于哪种打法，只能从下列枚举中选一个：
+   momentum（顺势动量）、breakout（突破）、mean-reversion（均值回归/抄底摸顶）、
+   news（纯消息驱动）、safe-haven（避险资金流）、macro（宏观数据/利率驱动）。
+   HOLD/CLOSE 不需要 setup。
+
 约束：
 - 只允许操作清单内的品种；每个允许品种给出且仅给出一个决策。
 - "marketSummary"、"analysis"、每个 "reasoning" 用简体中文书写；
-  JSON 的键名、"action"(BUY/SELL/CLOSE/HOLD)、"epic" 保持英文。
+  JSON 的键名、"action"(BUY/SELL/CLOSE/HOLD)、"regime"、"setup"、"epic" 保持英文枚举值。
 
 只输出一个 JSON 对象（不要 markdown 代码块），结构如下：
 {
   "marketSummary": "2-3 句今日新闻与市场情绪总览",
-  "analysis": "你按上面 1-5 步的推理过程",
+  "analysis": "你按上面 1-7 步的推理过程",
+  "regime": "risk-off",
   "decisions": [
-    { "epic": "GOLD", "action": "BUY|SELL|CLOSE|HOLD", "confidence": 0.0-1.0, "reasoning": "理由，引用具体新闻与动量" }
+    { "epic": "GOLD", "action": "BUY|SELL|CLOSE|HOLD", "confidence": 0.0-1.0, "setup": "safe-haven", "reasoning": "理由，引用具体新闻与动量" }
   ]
 }`;
 
@@ -101,73 +157,39 @@ ${posBlock}
 请按系统提示的框架分析，并返回所要求的 JSON。`;
 }
 
-/** Robustly extract a JSON object from a model response (handles fences / reasoner). */
-function extractJson(content: string): unknown {
-  const trimmed = content.trim();
-  try {
-    return JSON.parse(trimmed);
-  } catch {
-    // strip ```json ... ``` fences or grab the outermost { ... }
-    const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/);
-    const candidate = fenced?.[1] ?? trimmed.slice(trimmed.indexOf("{"), trimmed.lastIndexOf("}") + 1);
-    return JSON.parse(candidate);
-  }
-}
-
 export async function think(
   news: NewsItem[],
   markets: MarketSnapshot[],
   positions: OpenPosition[],
   balance: number,
 ): Promise<BrainOutput> {
-  const isReasoner = config.deepseek.model.includes("reasoner");
-
-  const body: Record<string, unknown> = {
-    model: config.deepseek.model,
-    messages: [
-      { role: "system", content: SYSTEM_PROMPT },
-      {
-        role: "user",
-        content: buildUserPrompt(news, markets, positions, balance, config.risk.allowedEpics),
-      },
-    ],
-  };
-  // deepseek-reasoner ignores temperature and does not support json_object response_format.
-  if (!isReasoner) {
-    body["temperature"] = 0.2;
-    body["response_format"] = { type: "json_object" };
-  }
-
-  const res = await fetch(config.deepseek.baseUrl + "/chat/completions", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${config.deepseek.apiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(body),
-  });
-
-  if (!res.ok) {
-    throw new Error(`DeepSeek ${res.status}: ${await res.text()}`);
-  }
-
-  const data = (await res.json()) as { choices: { message: { content: string } }[] };
-  const content = data.choices?.[0]?.message?.content ?? "{}";
+  const content = await callDeepSeek(
+    SYSTEM_PROMPT,
+    buildUserPrompt(news, markets, positions, balance, config.risk.allowedEpics),
+  );
 
   let parsed: BrainOutput;
   try {
     parsed = extractJson(content) as BrainOutput;
   } catch {
     log.warn("DeepSeek returned non-JSON, treating as no-op:", content.slice(0, 200));
-    return { marketSummary: "parse-error", decisions: [] };
+    return { marketSummary: "parse-error", regime: "normal", decisions: [] };
   }
 
   // sanitise
   const allowed = new Set(config.risk.allowedEpics);
+  const regimeSet = new Set<string>(REGIMES);
+  const setupSet = new Set<string>(SETUPS);
+
+  parsed.regime = regimeSet.has(parsed.regime) ? parsed.regime : "normal";
   parsed.decisions = (parsed.decisions ?? []).filter((d) => {
     const ok = allowed.has(d.epic?.toUpperCase());
     if (!ok) log.warn(`Dropping decision for non-allowed epic: ${d.epic}`);
     return ok;
   });
+  // Normalise setup tags; drop unknown values rather than trusting them.
+  for (const d of parsed.decisions) {
+    if (d.setup && !setupSet.has(d.setup)) d.setup = undefined;
+  }
   return parsed;
 }

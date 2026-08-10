@@ -10,6 +10,7 @@
     "loop": "tsx src/index.ts --loop",
     "status": "tsx src/index.ts --status",
     "report": "tsx src/index.ts --report",
+    "stats": "tsx src/index.ts --stats",
     "telegram-setup": "tsx src/index.ts --telegram-setup",
     "test-notify": "tsx src/index.ts --test-notify",
     "typecheck": "tsc --noEmit"

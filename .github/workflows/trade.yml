@@ -11,6 +11,10 @@ concurrency:
   group: trade
   cancel-in-progress: false
 
+# The workflow commits the updated trade ledger back to the repo.
+permissions:
+  contents: write
+
 jobs:
   cycle:
     runs-on: ubuntu-latest
@@ -24,10 +28,17 @@ jobs:
       MAX_POSITION_SIZE: "1000"
       MAX_OPEN_POSITIONS: "3"
       MIN_ACCOUNT_BALANCE: "100"
-      EXPOSURE_PER_TRADE_PCT: "20"
       STOP_LOSS_PCT: "2"
       TAKE_PROFIT_PCT: "4"
       MIN_CONFIDENCE: "0.6"
+      # Risk-budget engine: cap loss-per-trade + circuit breakers (auto-halt).
+      RISK_PER_TRADE_PCT: "0.5"
+      MAX_DAILY_LOSS_PCT: "2"
+      MAX_WEEKLY_LOSS_PCT: "5"
+      MAX_DRAWDOWN_PCT: "10"
+      # Devil's Advocate: start in observe (record vetoes, don't block) to A/B it.
+      DEVIL_ADVOCATE: "true"
+      DEVIL_MODE: observe
       DYNAMIC_SIZING: "true"
       USE_TRAILING_STOP: "true"
       TREND_DAYS: "7"
@@ -42,9 +53,26 @@ jobs:
       TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # full history so the commit-back rebase stays clean
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
           cache: npm
       - run: npm ci
       - run: npm run once
+      # Persist the append-only trade ledger so analytics survive across runs.
+      # The concurrency group above serialises cycles, so pushes don't collide.
+      - name: Commit trade ledger
+        if: always()
+        run: |
+          if git diff --quiet -- trades.log.jsonl; then
+            echo "Ledger unchanged — nothing to commit."
+            exit 0
+          fi
+          git config user.name "capitaltinking-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add trades.log.jsonl
+          git commit -m "ledger: trade cycle $(date -u +%Y-%m-%dT%H:%MZ)"
+          git pull --rebase --autostash origin main
+          git push

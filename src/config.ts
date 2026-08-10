@@ -45,6 +45,18 @@ export const config = {
     baseUrl: "https://api.deepseek.com",
   },
 
+  brain: {
+    // Devil's Advocate: a second AI that argues against every open proposal.
+    devilAdvocate: bool("DEVIL_ADVOCATE", true),
+    // counterConfidence at/above this => the critic "would veto" the trade.
+    vetoThreshold: num("DEVIL_VETO_THRESHOLD", 0.7),
+    // "observe" = record the critic's verdict but DON'T block (collect A/B data).
+    // "enforce" = vetoed trades are downgraded to HOLD. Start in observe.
+    devilMode: ((process.env.DEVIL_MODE ?? "observe").toLowerCase() === "enforce"
+      ? "enforce"
+      : "observe") as "enforce" | "observe",
+  },
+
   news: {
     apiKey: process.env.NEWS_API_KEY ?? "",
   },
@@ -60,11 +72,18 @@ export const config = {
     stopLossPct: num("STOP_LOSS_PCT", 2),
     takeProfitPct: num("TAKE_PROFIT_PCT", 4),
     minConfidence: num("MIN_CONFIDENCE", 0.65),
-    // Dynamic sizing: size each trade from account balance + leverage + confidence
-    // (instead of a fixed lot). MAX_POSITION_SIZE stays as a hard safety ceiling.
+    // Dynamic sizing: size each trade by RISK-TO-STOP so the loss if the stop is
+    // hit is capped at RISK_PER_TRADE_PCT of equity. MAX_POSITION_SIZE is a hard
+    // anti-runaway ceiling. (false = fixed MAX_POSITION_SIZE lot.)
     dynamicSizing: bool("DYNAMIC_SIZING", true),
-    // % of available balance to commit as margin per trade (leverage stretch).
-    exposurePerTradePct: num("EXPOSURE_PER_TRADE_PCT", 20),
+    // Max % of equity lost on a single trade if its stop-loss is hit. This is the
+    // core per-trade risk budget — one trade risks ~1R.
+    riskPerTradePct: num("RISK_PER_TRADE_PCT", 0.5),
+    // Circuit breakers (realised-P/L based, computed from the committed ledger).
+    // On breach the risk engine halts ALL new opens; closes still allowed.
+    maxDailyLossPct: num("MAX_DAILY_LOSS_PCT", 2),
+    maxWeeklyLossPct: num("MAX_WEEKLY_LOSS_PCT", 5),
+    maxDrawdownPct: num("MAX_DRAWDOWN_PCT", 10),
     // Trailing stop: the stop follows the price as it moves in your favour.
     useTrailingStop: bool("USE_TRAILING_STOP", true),
   },

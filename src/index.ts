@@ -3,10 +3,15 @@ import { log, audit } from "./logger.js";
 import { CapitalClient, type MarketSnapshot } from "./capital/client.js";
 import { fetchLatestNews } from "./news/fetch.js";
 import { think } from "./brain/deepseek.js";
+import { challenge, applyDevilVeto, type DevilResult } from "./brain/devil.js";
 import { applyRisk, type RiskResult } from "./risk/guard.js";
+import { checkCircuitBreakers, type BreakerStatus } from "./risk/breakers.js";
 import { notify, notifyEnabled, notifyProvider, telegramFindChatIds } from "./notify/notify.js";
 import { buildDailyReport } from "./analytics/report.js";
+import { buildStatsReport } from "./analytics/stats.js";
+import { loadTrades } from "./analytics/trades.js";
 import type { BrainOutput } from "./brain/deepseek.js";
+import type { OpenPosition, Transaction } from "./capital/client.js";
 
 function banner() {
   const live = config.mode === "live";
@@ -22,19 +27,40 @@ function banner() {
   }
   log.info(`  allowed: ${config.risk.allowedEpics.join(", ")}`);
   log.info(
+    `  devil: ${config.brain.devilAdvocate ? `on (${config.brain.devilMode}, veto≥${config.brain.vetoThreshold})` : "off"}`,
+  );
+  log.info(
     `  notify: ${notifyEnabled() ? `on (${notifyProvider()}, on=${config.notify.verbosity})` : "off"}`,
   );
   log.info("──────────────────────────────────────────────");
 }
 
 /** 生成本轮决策的中文 Telegram 通知。 */
-function buildNotification(brain: BrainOutput, risk: RiskResult, balance: number): string {
+function buildNotification(
+  brain: BrainOutput,
+  risk: RiskResult,
+  balance: number,
+  devil?: DevilResult,
+  breakers?: BreakerStatus,
+): string {
   const tag = config.dryRun ? "模拟(不下单)" : config.mode === "live" ? "真钱 💰" : "模拟账户";
   const dir = (d: "BUY" | "SELL") => (d === "BUY" ? "买入" : "卖出");
   const lines: string[] = [`🧠 capitaltinking [${tag}]`, `账户余额：${balance}`];
 
+  if (breakers?.active) {
+    lines.push("", `🛑 风控熔断（暂停开新仓）：${breakers.reason}`);
+  }
+
   if (brain.marketSummary && brain.marketSummary !== "parse-error") {
     lines.push("", `📰 行情摘要：${brain.marketSummary}`);
+  }
+
+  if (devil && devil.vetoes.length) {
+    const verb = config.brain.devilMode === "enforce" ? "否决" : "标记否决(观察中，仍开仓)";
+    lines.push("", `😈 反方${verb}：`);
+    for (const v of devil.vetoes) {
+      lines.push(`• ${v.epic}（counter ${v.counterConfidence.toFixed(2)}）— ${v.rebuttal}`);
+    }
   }
 
   if (risk.closes.length) {
@@ -91,6 +117,78 @@ async function showStatus(client: CapitalClient) {
   }
 }
 
+/** Parse a Capital.com money string like "USD12.34" or "-5.6" into a number. */
+function parseMoney(s: string): number {
+  const m = s.match(/-?\d+(\.\d+)?/);
+  return m ? Number(m[0]) : 0;
+}
+
+/**
+ * Detect positions we opened that have since vanished from the account — i.e.
+ * closed by the broker's stop-loss / take-profit while no cycle was running.
+ * Without this, every SL/TP exit is invisible to the audit log and silently
+ * excluded from win-rate. We recover each one's realised P/L from transaction
+ * history and write a synthetic "close" so the analytics stay honest.
+ */
+async function reconcileExits(
+  client: CapitalClient,
+  positions: OpenPosition[],
+): Promise<void> {
+  const { stillOpen } = await loadTrades();
+  const live = new Set(positions.map((p) => p.dealId));
+  const vanished = stillOpen.filter((o) => o.dealId && !live.has(o.dealId));
+  if (vanished.length === 0) return;
+
+  // Pull transactions since the oldest vanished open, to source realised P/L.
+  const oldest = vanished.reduce(
+    (min, o) => (o.at < min ? o.at : min),
+    vanished[0]!.at,
+  );
+  let txns: Transaction[];
+  try {
+    txns = await client.getTransactions(oldest, new Date().toISOString());
+  } catch (e) {
+    log.warn("Reconcile: could not load transactions:", (e as Error).message);
+    txns = [];
+  }
+  // Realised-P/L transactions, oldest first, for FIFO attribution per instrument.
+  const pnlTxns = txns
+    .filter((t) => parseMoney(t.profitAndLoss) !== 0)
+    .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+  const consumed = new Set<number>();
+
+  // Resolve each vanished epic to its Capital instrument name for matching.
+  const nameByEpic = new Map<string, string>();
+  for (const o of vanished) {
+    if (nameByEpic.has(o.epic)) continue;
+    try {
+      nameByEpic.set(o.epic, (await client.getMarket(o.epic)).instrumentName);
+    } catch {
+      nameByEpic.set(o.epic, o.epic);
+    }
+  }
+
+  for (const o of vanished.sort((a, b) => (a.at < b.at ? -1 : 1))) {
+    const name = nameByEpic.get(o.epic);
+    const idx = pnlTxns.findIndex(
+      (t, i) => !consumed.has(i) && (t.instrumentName === name || t.instrumentName === o.epic),
+    );
+    const pnl = idx >= 0 ? parseMoney(pnlTxns[idx]!.profitAndLoss) : undefined;
+    if (idx >= 0) consumed.add(idx);
+    await audit({
+      event: "close",
+      epic: o.epic,
+      dealId: o.dealId,
+      pnl,
+      entryLevel: o.entry,
+      reason: "reconciled",
+    });
+    log.info(
+      `  Reconciled exit ${o.epic} (${o.dealId}) — realised P/L ${pnl ?? "unknown"}`,
+    );
+  }
+}
+
 async function runCycle(client: CapitalClient): Promise<void> {
   await client.login();
 
@@ -98,6 +196,17 @@ async function runCycle(client: CapitalClient): Promise<void> {
   log.info(`Account balance: ${account.balance} ${account.currency} (available ${account.available})`);
 
   const positions = await client.getPositions();
+  // Fold in any broker SL/TP exits that happened between cycles before deciding.
+  await reconcileExits(client, positions);
+
+  // Circuit breakers: read the ledger and decide whether new opens are halted.
+  const { closed: ledger } = await loadTrades();
+  const breakers = checkCircuitBreakers(ledger, account.balance);
+  log.info(
+    `Risk budget: 今日 ${breakers.dailyPnl} (亏${breakers.dailyLossPct}%) / 近7日 ${breakers.weeklyPnl} (亏${breakers.weeklyLossPct}%) / 回撤 ${breakers.drawdownPct}%`,
+  );
+  if (breakers.active) log.warn(`🛑 熔断触发，暂停开新仓：${breakers.reason}`);
+
   const news = await fetchLatestNews();
 
   // Snapshot prices for every allowed instrument.
@@ -133,8 +242,29 @@ async function runCycle(client: CapitalClient): Promise<void> {
     log.info(`  DeepSeek: ${d.epic} -> ${d.action} (conf ${d.confidence.toFixed(2)}) — ${d.reasoning}`);
   }
 
-  // The risk gate decides what is actually permitted.
-  const risk = applyRisk(brain.decisions, account, positions, markets);
+  // The Devil's Advocate argues against every open proposal. In "observe" mode
+  // it only records its verdict (trades still open) so we can A/B the veto; in
+  // "enforce" mode a high-conviction veto downgrades the trade to HOLD.
+  let decisions = brain.decisions;
+  let devil: DevilResult | undefined;
+  if (config.brain.devilAdvocate) {
+    const critiques = await challenge(brain, news, snapshots);
+    devil = applyDevilVeto(decisions, critiques, config.brain.vetoThreshold, config.brain.devilMode);
+    decisions = devil.decisions;
+    const tag = config.brain.devilMode === "enforce" ? "否决" : "标记否决(观察)";
+    for (const v of devil.vetoes) {
+      log.warn(`  😈 反方${tag} ${v.epic}（counter ${v.counterConfidence.toFixed(2)}）：${v.rebuttal}`);
+    }
+    for (const r of devil.reduced) {
+      log.info(`  😈 反方建议降信心 ${r.epic} ${r.from} → ${r.to}`);
+    }
+  }
+
+  // The risk gate decides what is actually permitted (halted opens if breached).
+  const risk = applyRisk(decisions, account, positions, markets, {
+    active: breakers.active,
+    reason: breakers.reason,
+  });
   for (const rj of risk.rejected) log.warn(`  Rejected ${rj.epic}: ${rj.reason}`);
 
   await audit({
@@ -142,21 +272,35 @@ async function runCycle(client: CapitalClient): Promise<void> {
     mode: config.mode,
     dryRun: config.dryRun,
     balance: account.balance,
+    breakers,
+    regime: brain.regime,
     summary: brain.marketSummary,
-    decisions: brain.decisions,
+    decisions: brain.decisions, // original Chief Trader judgment (pre-veto)
+    devil: devil
+      ? { mode: config.brain.devilMode, vetoes: devil.vetoes, reduced: devil.reduced }
+      : undefined,
+    finalDecisions: decisions, // post-veto (differs from decisions only in enforce mode)
     approved: risk.approved,
     closes: risk.closes,
     rejected: risk.rejected,
   });
 
-  // Execute closes.
+  // Execute closes. We record the position's uPL at decision time as the
+  // realised P/L — close-at-market makes it effectively realised.
   for (const c of risk.closes) {
     if (config.dryRun) {
       log.info(`  [DRY_RUN] would CLOSE ${c.epic} (${c.dealId}) — ${c.reasoning}`);
     } else {
       await client.closePosition(c.dealId);
-      log.ok(`  CLOSED ${c.epic} (${c.dealId})`);
-      await audit({ event: "close", epic: c.epic, dealId: c.dealId });
+      log.ok(`  CLOSED ${c.epic} (${c.dealId}) — P/L ${c.upl}`);
+      await audit({
+        event: "close",
+        epic: c.epic,
+        dealId: c.dealId,
+        pnl: c.upl,
+        entryLevel: c.entry,
+        reason: "ai",
+      });
     }
   }
 
@@ -187,8 +331,21 @@ async function runCycle(client: CapitalClient): Promise<void> {
             profitLevel: t.profitLevel,
           };
       const { dealReference } = await client.openPosition(order);
-      log.ok(`  OPENED ${t.direction} ${t.epic} size ${t.size} (${stopDesc}) (ref ${dealReference})`);
-      await audit({ event: "open", ...t, trailing: config.risk.useTrailingStop, dealReference });
+      // Resolve the fill so the trade carries a real dealId (join key) + entry.
+      const confirm = await client.getDealConfirmation(dealReference);
+      const entryLevel = confirm?.level || t.entry;
+      log.ok(
+        `  OPENED ${t.direction} ${t.epic} size ${t.size} (${stopDesc}) @ ${entryLevel} (ref ${dealReference}${confirm ? `, deal ${confirm.dealId}` : ""})`,
+      );
+      await audit({
+        event: "open",
+        ...t,
+        entry: entryLevel,
+        regime: brain.regime,
+        trailing: config.risk.useTrailingStop,
+        dealReference,
+        dealId: confirm?.dealId,
+      });
     }
   }
 
@@ -199,7 +356,7 @@ async function runCycle(client: CapitalClient): Promise<void> {
   // Notify. In "actions" mode, stay quiet on pure-HOLD cycles.
   const hadAction = risk.approved.length > 0 || risk.closes.length > 0;
   if (notifyEnabled() && (config.notify.verbosity === "all" || hadAction)) {
-    await notify(buildNotification(brain, risk, account.balance));
+    await notify(buildNotification(brain, risk, account.balance, devil, breakers));
   }
 }
 
@@ -234,6 +391,15 @@ async function main() {
 
   if (args.includes("--status")) {
     await showStatus(client);
+    return;
+  }
+
+  // Analytics: win-rate by regime / setup / instrument. Reads the audit log,
+  // no account needed. Pass --notify to also push it to Telegram.
+  if (args.includes("--stats")) {
+    const report = await buildStatsReport();
+    log.info("\n" + report);
+    if (args.includes("--notify") && notifyEnabled()) await notify(report);
     return;
   }
 

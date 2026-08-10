@@ -1,22 +1,31 @@
 import { config } from "../config.js";
 import type { Account, OpenPosition, MarketSnapshot } from "../capital/client.js";
-import type { TradeDecision } from "../brain/deepseek.js";
+import type { TradeDecision, Setup } from "../brain/deepseek.js";
+import type { DevilVerdict } from "../brain/devil.js";
 
 export interface ApprovedTrade {
   epic: string;
   direction: "BUY" | "SELL";
   size: number;
+  entry: number; // expected fill price (offer for BUY, bid for SELL)
   stopLevel: number;
   profitLevel: number;
   stopDistance: number; // for trailing stop
   profitDistance: number;
+  riskAmount: number; // loss if the stop is hit (the trade's 1R, in account currency)
   reasoning: string;
   confidence: number;
+  setup?: Setup;
+  // Devil's Advocate judgment carried onto the trade for the ledger / A/B.
+  counterConfidence?: number;
+  devilVerdict?: DevilVerdict;
+  wouldVeto?: boolean;
 }
 
 export interface RiskResult {
   approved: ApprovedTrade[];
-  closes: { dealId: string; epic: string; reasoning: string }[];
+  // entry/upl captured at decision time so the audit trail records the outcome.
+  closes: { dealId: string; epic: string; reasoning: string; entry: number; upl: number }[];
   rejected: { epic: string; reason: string }[];
 }
 
@@ -24,11 +33,18 @@ export interface RiskResult {
  * Hard, non-negotiable risk gate. The AI can only SUGGEST; this function
  * decides what is actually allowed. Every rule here protects the account.
  */
+/** Trading-halt signal from the circuit breakers. When active, no new opens. */
+export interface Halt {
+  active: boolean;
+  reason: string;
+}
+
 export function applyRisk(
   decisions: TradeDecision[],
   account: Account,
   positions: OpenPosition[],
   markets: Map<string, MarketSnapshot>,
+  halt: Halt = { active: false, reason: "" },
 ): RiskResult {
   const result: RiskResult = { approved: [], closes: [], rejected: [] };
   const r = config.risk;
@@ -52,12 +68,25 @@ export function applyRisk(
     // Handle closes first — always allowed (reducing risk).
     if (d.action === "CLOSE") {
       const pos = positions.find((p) => p.epic === d.epic);
-      if (pos) result.closes.push({ dealId: pos.dealId, epic: d.epic, reasoning: d.reasoning });
+      if (pos)
+        result.closes.push({
+          dealId: pos.dealId,
+          epic: d.epic,
+          reasoning: d.reasoning,
+          entry: pos.level,
+          upl: pos.upl,
+        });
       else result.rejected.push({ epic: d.epic, reason: "想平仓但当前没有该品种持仓" });
       continue;
     }
 
     // BUY / SELL: run the full gauntlet.
+    // Circuit breaker: when a loss/drawdown limit is hit, no new positions.
+    if (halt.active) {
+      result.rejected.push({ epic: d.epic, reason: `风控熔断：${halt.reason}` });
+      continue;
+    }
+
     if (d.confidence < r.minConfidence) {
       result.rejected.push({
         epic: d.epic,
@@ -101,18 +130,19 @@ export function applyRisk(
     const stopLevel = direction === "BUY" ? entry - slDist : entry + slDist;
     const profitLevel = direction === "BUY" ? entry + tpDist : entry - tpDist;
 
-    // Balance + leverage based position sizing.
-    // Commit EXPOSURE_PER_TRADE_PCT of available balance as margin, scaled by
-    // conviction, then clamp to the instrument's min/max and the safety ceiling.
+    // Risk-to-stop position sizing: size so the loss IF the stop is hit is
+    // capped at RISK_PER_TRADE_PCT of equity (scaled down for lower conviction,
+    // never above the cap). size = riskBudget / (contractSize × stopDistance).
+    // This makes every trade risk ~1R and bounds tail loss by construction.
+    const equity = account.balance;
     let size = r.maxPositionSize;
     if (r.dynamicSizing) {
       const span = Math.max(0.0001, 1 - r.minConfidence);
       const convFactor =
         0.5 + 0.5 * Math.min(1, Math.max(0, (d.confidence - r.minConfidence) / span));
-
-      const marginPerUnit = entry * market.marginFactor * market.contractSize;
-      const targetMargin = account.available * (r.exposurePerTradePct / 100);
-      let raw = marginPerUnit > 0 ? (targetMargin / marginPerUnit) * convFactor : market.minDealSize;
+      const budget = equity * (r.riskPerTradePct / 100) * convFactor;
+      const riskPerUnit = market.contractSize * slDist;
+      let raw = riskPerUnit > 0 ? budget / riskPerUnit : market.minDealSize;
 
       // Upper bounds first: instrument max (if known) and the anti-runaway ceiling.
       if (market.maxDealSize > 0) raw = Math.min(raw, market.maxDealSize);
@@ -123,16 +153,46 @@ export function applyRisk(
       if (size < market.minDealSize) size = market.minDealSize;
     }
 
+    // Actual risk at the chosen size (post-rounding / min-lot floor).
+    const riskAmount = round(size * market.contractSize * slDist);
+
+    // Hard per-trade cap: if the smallest tradeable size still risks more than
+    // RISK_PER_TRADE_PCT of equity, REFUSE — never silently take oversized risk.
+    const maxRisk = equity * (r.riskPerTradePct / 100);
+    if (riskAmount > maxRisk * 1.001) {
+      result.rejected.push({
+        epic: d.epic,
+        reason: `最小手数风险 ${riskAmount} 超过单笔上限 ${round(maxRisk)}（${r.riskPerTradePct}% 权益）`,
+      });
+      continue;
+    }
+
+    // Margin safety: don't open a position we can't cover.
+    const requiredMargin = size * market.contractSize * entry * market.marginFactor;
+    if (requiredMargin > account.available) {
+      result.rejected.push({
+        epic: d.epic,
+        reason: `所需保证金 ${round(requiredMargin)} 超过可用 ${round(account.available)}`,
+      });
+      continue;
+    }
+
     result.approved.push({
       epic: d.epic,
       direction,
       size,
+      entry: round(entry),
       stopLevel: round(stopLevel),
       profitLevel: round(profitLevel),
       stopDistance: round(slDist),
       profitDistance: round(tpDist),
+      riskAmount,
       reasoning: d.reasoning,
       confidence: d.confidence,
+      setup: d.setup,
+      counterConfidence: d.counterConfidence,
+      devilVerdict: d.devilVerdict,
+      wouldVeto: d.wouldVeto,
     });
     projectedOpen++;
   }

@@ -231,6 +231,32 @@ export class CapitalClient {
     return data;
   }
 
+  /**
+   * Confirm a just-placed deal to recover the resulting position's dealId and
+   * actual fill level. Capital.com fills are async: the POST returns only a
+   * dealReference, and /confirms resolves it. Returns null if it can't confirm.
+   */
+  async getDealConfirmation(
+    dealReference: string,
+  ): Promise<{ dealId: string; level: number; status: string } | null> {
+    try {
+      const { data } = await this.request<any>(
+        "GET",
+        `/api/v1/confirms/${encodeURIComponent(dealReference)}`,
+      );
+      const dealId = data.affectedDeals?.[0]?.dealId ?? data.dealId;
+      if (!dealId) return null;
+      return {
+        dealId,
+        level: Number(data.level ?? 0) || 0,
+        status: data.dealStatus ?? data.status ?? "UNKNOWN",
+      };
+    } catch (e) {
+      log.warn(`Deal confirmation failed for ${dealReference}:`, (e as Error).message);
+      return null;
+    }
+  }
+
   async closePosition(dealId: string): Promise<void> {
     await this.request("DELETE", `/api/v1/positions/${encodeURIComponent(dealId)}`);
   }
