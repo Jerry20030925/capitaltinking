@@ -3,7 +3,7 @@
 # the `fly apps create` command. This is a worker (no HTTP service), so it runs
 # one always-on machine that executes `npm run loop`.
 app = "capitaltinking"
-primary_region = "syd"
+primary_region = "iad"
 
 [build]
   dockerfile = "Dockerfile"
