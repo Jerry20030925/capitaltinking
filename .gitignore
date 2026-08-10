@@ -8,3 +8,4 @@ dist/
 # volume in prod), not source. Don't commit local-run artifacts.
 brain-memory.json
 readiness-state.json
+scaleout-state.json

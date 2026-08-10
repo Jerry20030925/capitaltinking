@@ -57,6 +57,10 @@ primary_region = "iad"
 
   DYNAMIC_SIZING = "true"
   USE_TRAILING_STOP = "true"
+  # Partial profit-taking: bank pieces as a winner runs, trail the rest.
+  # "profit%:close%-of-original" tiers; remainder rides the trailing stop.
+  PARTIAL_TP = "true"
+  PARTIAL_TP_TIERS = "1:20,2:30,3:20"
   TREND_DAYS = "7"
 
   # Devil's Advocate — start in observe (record vetoes, don't block) to A/B it.

@@ -7,6 +7,12 @@ import { callQwen } from "./brain/client.js";
 import { computeIndicators } from "./brain/indicators.js";
 import { combineBrains, type EnsembleResult } from "./brain/ensemble.js";
 import { loadBrainMemory, updateBrainMemory } from "./brain/memory.js";
+import {
+  loadScaleoutState,
+  saveScaleoutState,
+  pruneScaleoutState,
+  planScaleOuts,
+} from "./risk/scaleout.js";
 import { challenge, applyDevilVeto, type DevilResult } from "./brain/devil.js";
 import { applyRisk, type RiskResult } from "./risk/guard.js";
 import { checkCircuitBreakers, type BreakerStatus } from "./risk/breakers.js";
@@ -415,6 +421,49 @@ async function runCycle(client: CapitalClient): Promise<void> {
         entryLevel: c.entry,
         reason: "ai",
       });
+    }
+  }
+
+  // Partial profit-taking (scale-outs): bank pieces of winners as they run, let
+  // the rest ride the trailing stop. Runs on positions NOT being fully closed by
+  // the AI this cycle. Uses persistent per-dealId state so tiers fire once.
+  if (config.risk.partialTp) {
+    try {
+      const state = await loadScaleoutState();
+      pruneScaleoutState(state, positions);
+      const closingIds = new Set(risk.closes.map((c) => c.dealId));
+      const survivors = positions.filter((p) => !closingIds.has(p.dealId));
+      const plans = planScaleOuts(survivors, markets, state);
+      const done: string[] = [];
+      for (const pl of plans) {
+        if (config.dryRun) {
+          log.info(
+            `  [DRY_RUN] 分批止盈 ${pl.epic} +${pl.profitPct}% → 平 ${pl.fullClose ? "全部(清仓)" : pl.size}（第${pl.tier}档）`,
+          );
+          continue;
+        }
+        try {
+          if (pl.fullClose) await client.closePosition(pl.dealId);
+          else await client.reducePosition(pl.epic, pl.direction, pl.size);
+          log.ok(`  💰 分批止盈 ${pl.epic} +${pl.profitPct}% 平 ${pl.size}${pl.fullClose ? "(清仓)" : ""}（第${pl.tier}档）`);
+          await audit({
+            event: "partial",
+            epic: pl.epic,
+            dealId: pl.dealId,
+            size: pl.size,
+            profitPct: pl.profitPct,
+            tier: pl.tier,
+            fullClose: pl.fullClose,
+          });
+          done.push(`${pl.epic} +${pl.profitPct}% 平${pl.size}${pl.fullClose ? "(清仓)" : ""}`);
+        } catch (e) {
+          log.warn(`  分批止盈失败 ${pl.epic}:`, (e as Error).message);
+        }
+      }
+      await saveScaleoutState(state);
+      if (done.length && notifyEnabled()) queueNotification("💰 分批止盈：\n• " + done.join("\n• "));
+    } catch (e) {
+      log.warn("Partial take-profit pass failed:", (e as Error).message);
     }
   }
 

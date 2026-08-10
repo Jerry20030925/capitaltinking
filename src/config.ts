@@ -20,6 +20,20 @@ function bool(name: string, def: boolean): boolean {
   return v.toLowerCase() === "true" || v === "1";
 }
 
+/** Parse "1:20,2:30,3:20" → tiers [{profitPct,closePct},…] sorted by profit. */
+function tiers(name: string, def: string): { profitPct: number; closePct: number }[] {
+  return (process.env[name] ?? def)
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .map((pair) => {
+      const [p, c] = pair.split(":").map(Number);
+      return { profitPct: p!, closePct: c! };
+    })
+    .filter((t) => Number.isFinite(t.profitPct) && Number.isFinite(t.closePct) && t.closePct > 0)
+    .sort((a, b) => a.profitPct - b.profitPct);
+}
+
 const mode = (process.env.TRADING_MODE ?? "demo").toLowerCase();
 if (mode !== "demo" && mode !== "live") {
   throw new Error(`TRADING_MODE must be "demo" or "live", got "${mode}"`);
@@ -143,6 +157,12 @@ export const config = {
     maxConsecutiveLosses: num("MAX_CONSECUTIVE_LOSSES", 4),
     // Trailing stop: the stop follows the price as it moves in your favour.
     useTrailingStop: bool("USE_TRAILING_STOP", true),
+    // Partial profit-taking (scale-outs): let winners run by banking pieces of a
+    // position as it moves in favour and trailing the rest. Tiers are
+    // "profit%:close%-of-original" pairs; whatever isn't scaled out rides the
+    // trailing stop. e.g. "1:20,2:30,3:20" = at +1% bank 20%, +2% 30%, +3% 20%.
+    partialTp: bool("PARTIAL_TP", true),
+    partialTpTiers: tiers("PARTIAL_TP_TIERS", "1:20,2:30,3:20"),
   },
 
   // Number of trailing days of price history fed to the brain as a trend signal.

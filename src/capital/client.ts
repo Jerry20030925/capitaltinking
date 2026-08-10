@@ -292,4 +292,22 @@ export class CapitalClient {
   async closePosition(dealId: string): Promise<void> {
     await this.request("DELETE", `/api/v1/positions/${encodeURIComponent(dealId)}`);
   }
+
+  /**
+   * Partially close a position by dealing the OPPOSITE direction for `size`.
+   * Capital.com nets positions per instrument, so this reduces the open position
+   * (same dealId/entry survive) rather than opening a hedge — used for scale-out
+   * profit-taking. A plain market order (no stop/limit).
+   */
+  async reducePosition(
+    epic: string,
+    positionDirection: "BUY" | "SELL",
+    size: number,
+  ): Promise<{ dealReference: string }> {
+    return this.openPosition({
+      epic,
+      direction: positionDirection === "BUY" ? "SELL" : "BUY",
+      size,
+    });
+  }
 }
