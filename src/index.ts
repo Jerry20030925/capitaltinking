@@ -14,6 +14,7 @@ import { notify, notifyEnabled, notifyProvider, telegramFindChatIds } from "./no
 import { buildDailyReport } from "./analytics/report.js";
 import { buildStatsReport, buildPerfHint } from "./analytics/stats.js";
 import { computeReadiness, renderReadiness, maybeAlertReadiness } from "./analytics/readiness.js";
+import { walkForward, renderBacktest, type BacktestReport } from "./backtest/engine.js";
 import { loadTrades } from "./analytics/trades.js";
 import type { OpenPosition, Transaction } from "./capital/client.js";
 
@@ -518,6 +519,32 @@ async function main() {
 
   if (args.includes("--status")) {
     await showStatus(client);
+    return;
+  }
+
+  // Walk-forward backtest of the deterministic strategy components (read-only, no
+  // trading). Pulls history per allowed epic and prints the OOS-validated params.
+  if (args.includes("--backtest")) {
+    await client.login();
+    const barsN = Number(process.env.BACKTEST_BARS ?? 300);
+    const resolution = process.env.BACKTEST_RESOLUTION ?? "DAY";
+    const cost = Number(process.env.BACKTEST_COST_PCT ?? 0.1);
+    const reports: BacktestReport[] = [];
+    for (const epic of config.risk.allowedEpics) {
+      try {
+        const bars = await client.getHistoricalBars(epic, resolution, barsN);
+        if (bars.length < 80) {
+          log.warn(`Backtest ${epic}: only ${bars.length} bars — skipping.`);
+          continue;
+        }
+        reports.push(walkForward(epic, bars, 0.6, cost));
+      } catch (e) {
+        log.warn(`Backtest ${epic} failed:`, (e as Error).message);
+      }
+    }
+    const report = renderBacktest(reports);
+    log.info("\n" + report);
+    if (args.includes("--notify") && notifyEnabled()) await notify(report);
     return;
   }
 

@@ -12,6 +12,7 @@
     "report": "tsx src/index.ts --report",
     "stats": "tsx src/index.ts --stats",
     "readiness": "tsx src/index.ts --readiness",
+    "backtest": "tsx src/index.ts --backtest",
     "telegram-setup": "tsx src/index.ts --telegram-setup",
     "test-notify": "tsx src/index.ts --test-notify",
     "typecheck": "tsc --noEmit"
