@@ -1,0 +1,8 @@
+node_modules
+.git
+.github
+.env
+*.log
+trades.log.jsonl
+dist
+README.md

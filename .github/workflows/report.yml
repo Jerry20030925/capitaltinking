@@ -1,11 +1,11 @@
 name: daily-report
 
-# Sends the Chinese daily review to Telegram once a day. Time is UTC —
-# 09:00 UTC ≈ evening in Australia. Adjust the cron to your timezone.
+# The Fly.io loop already sends the daily report itself (REPORT_HOUR, local time),
+# so the scheduled cron is DISABLED to avoid a duplicate. Manual-only now.
 on:
-  schedule:
-    - cron: "0 9 * * *"
   workflow_dispatch: {}
+  # schedule:
+  #   - cron: "0 9 * * *"   # disabled — the Fly.io loop sends the daily report
 
 jobs:
   report:

@@ -1,0 +1,52 @@
+# Fly.io config for the 24/7 capitaltinking loop.
+# App name is GLOBAL on Fly — if "capitaltinking" is taken, change it here and in
+# the `fly apps create` command. This is a worker (no HTTP service), so it runs
+# one always-on machine that executes `npm run loop`.
+app = "capitaltinking"
+primary_region = "syd"
+
+[build]
+  dockerfile = "Dockerfile"
+
+# Non-secret config. SECRETS (API keys/tokens) go via `fly secrets set`, never here.
+[env]
+  TZ = "Australia/Sydney"          # daily report + daily-loss window use local time
+  LEDGER_DIR = "/data"             # persistent volume (see [mounts])
+  LOOP_INTERVAL_MINUTES = "15"     # one decide-and-trade cycle every 15 min
+
+  TRADING_MODE = "demo"
+  DRY_RUN = "false"
+  DEEPSEEK_MODEL = "deepseek-reasoner"
+  ALLOWED_EPICS = "GOLD,SILVER,US500,OIL_CRUDE,BTCUSD,EURUSD"
+
+  MAX_POSITION_SIZE = "1000"
+  MAX_OPEN_POSITIONS = "3"
+  MIN_ACCOUNT_BALANCE = "100"
+  STOP_LOSS_PCT = "2"
+  TAKE_PROFIT_PCT = "4"
+  MIN_CONFIDENCE = "0.6"
+
+  # Risk-budget engine
+  RISK_PER_TRADE_PCT = "0.5"
+  MAX_DAILY_LOSS_PCT = "2"
+  MAX_WEEKLY_LOSS_PCT = "5"
+  MAX_DRAWDOWN_PCT = "10"
+
+  DYNAMIC_SIZING = "true"
+  USE_TRAILING_STOP = "true"
+  TREND_DAYS = "7"
+
+  # Devil's Advocate — start in observe (record vetoes, don't block) to A/B it.
+  DEVIL_ADVOCATE = "true"
+  DEVIL_MODE = "observe"
+
+  NOTIFY_ON = "all"
+
+# Persistent disk for the trade ledger, so analytics survive restarts/deploys.
+[mounts]
+  source = "ledger"
+  destination = "/data"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"

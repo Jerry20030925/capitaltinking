@@ -152,6 +152,41 @@ impossible (no time-aligned historical news corpus; the LLM already knows how pa
 resolved → lookahead bias), so **the Capital.com demo, running forward, is the out-of-sample,
 cost-inclusive test** — demo pricing includes real spread and overnight funding.
 
+## 24/7 on Fly.io
+
+The `trade` loop runs continuously on an always-on Fly machine (`fly.toml` +
+`Dockerfile`). The GitHub Actions cron is disabled so the two don't trade the same
+account. One-time setup:
+
+```bash
+# 0. Install + log in
+brew install flyctl          # or: curl -L https://fly.io/install.sh | sh
+fly auth login
+
+# 1. Create the app (app names are GLOBAL — pick a unique one and update fly.toml)
+fly apps create capitaltinking
+
+# 2. Persistent volume for the ledger (same region as fly.toml)
+fly volumes create ledger --region syd --size 1 --yes
+
+# 3. Secrets (NEVER put these in fly.toml)
+fly secrets set \
+  CAPITAL_API_KEY=... CAPITAL_IDENTIFIER=... CAPITAL_PASSWORD=... \
+  DEEPSEEK_API_KEY=... TELEGRAM_BOT_TOKEN=... TELEGRAM_CHAT_ID=...
+  # optional: NEWS_API_KEY=...
+
+# 4. Deploy, and pin to exactly ONE machine (two would double-trade)
+fly deploy
+fly scale count 1
+
+# 5. Watch
+fly logs
+```
+
+Config (interval, risk limits, DEVIL_MODE, etc.) lives in `fly.toml`'s `[env]`; change
+it and `fly deploy` again. The ledger persists on the `/data` volume, so `stats`
+accumulate across restarts and deploys.
+
 ## Recommended path to (maybe) going live
 
 1. Run `npm run status` — confirm it reads your **demo** account.

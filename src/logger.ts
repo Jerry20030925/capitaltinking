@@ -1,6 +1,14 @@
 import { appendFile } from "node:fs/promises";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
-const AUDIT_FILE = new URL("../trades.log.jsonl", import.meta.url);
+/**
+ * The trade ledger. On an always-on host, set LEDGER_DIR to a persistent volume
+ * (e.g. /data) so it survives restarts; otherwise it lives at the repo root.
+ */
+export const AUDIT_FILE = process.env.LEDGER_DIR
+  ? join(process.env.LEDGER_DIR, "trades.log.jsonl")
+  : fileURLToPath(new URL("../trades.log.jsonl", import.meta.url));
 
 const ts = () => new Date().toISOString();
 

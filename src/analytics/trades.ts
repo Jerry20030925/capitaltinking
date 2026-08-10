@@ -1,4 +1,5 @@
 import { readFile } from "node:fs/promises";
+import { AUDIT_FILE } from "../logger.js";
 import type { Regime, Setup } from "../brain/deepseek.js";
 import type { DevilVerdict } from "../brain/devil.js";
 
@@ -12,8 +13,6 @@ import type { DevilVerdict } from "../brain/devil.js";
  * when available, otherwise FIFO within an epic (legacy records predate dealId
  * capture). Broker-side SL/TP exits are folded in via reconciled "close" events.
  */
-
-const AUDIT_FILE = new URL("../../trades.log.jsonl", import.meta.url);
 
 export interface OpenRecord {
   at: string;

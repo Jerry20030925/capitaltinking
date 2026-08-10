@@ -1,11 +1,12 @@
 name: trade
 
-# Runs one decide-and-trade cycle every hour, in GitHub's cloud — keeps
-# running even when your computer is off. Times are UTC.
+# The 24/7 loop now runs on Fly.io (see fly.toml). The scheduled cron is
+# DISABLED so the two don't trade the same demo account at once (double-trading).
+# Kept as manual-only for one-off cycles from the Actions tab.
 on:
-  schedule:
-    - cron: "0 */2 * * *" # every 2 hours (UTC) — stays within Actions free tier
-  workflow_dispatch: {} # allow manual "Run workflow" from the Actions tab
+  workflow_dispatch: {}
+  # schedule:
+  #   - cron: "0 */2 * * *"   # disabled — Fly.io runs the loop 24/7
 
 concurrency:
   group: trade
