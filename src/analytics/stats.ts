@@ -119,6 +119,28 @@ function groupBy(trades: ClosedTrade[], keyOf: (t: ClosedTrade) => string): Buck
   return [...map.values()].sort((a, b) => b.n - a.n);
 }
 
+/**
+ * Learning-trend signal: is the brain actually getting better as it accumulates
+ * lessons? Split the scored trades chronologically in half and compare the two
+ * halves' expectancy / win-rate. Returns "" until there are enough samples.
+ */
+function learningTrendLine(closed: ClosedTrade[]): string {
+  const scored = closed
+    .filter((t) => typeof t.pnl === "number")
+    .sort((a, b) => new Date(a.close.at).getTime() - new Date(b.close.at).getTime());
+  if (scored.length < 8) return "";
+  const mid = Math.floor(scored.length / 2);
+  const early = metrics(scored.slice(0, mid));
+  const recent = metrics(scored.slice(mid));
+  const d = recent.expectancy - early.expectancy;
+  const arrow = d > 0.01 ? "↑ 在变好" : d < -0.01 ? "↓ 在变差" : "→ 基本持平";
+  return `学习趋势：早期(${early.n}笔)期望${sign(early.expectancy)}${early.expectancy.toFixed(1)}/胜率${pct(
+    early.winRate,
+  )} → 近期(${recent.n}笔)期望${sign(recent.expectancy)}${recent.expectancy.toFixed(1)}/胜率${pct(
+    recent.winRate,
+  )}（${arrow}）`;
+}
+
 function confidenceBand(c: number): string {
   if (c >= 0.9) return "≥0.90";
   if (c >= 0.8) return "0.80–0.89";
@@ -157,6 +179,8 @@ export function buildPerfHint(closed: ClosedTrade[]): string {
       o.expectancyR !== null ? `(${sign(o.expectancyR)}${o.expectancyR.toFixed(2)}R)` : ""
     } 盈亏比${fmtPF(o.profitFactor)}`,
   ];
+  const trend = learningTrendLine(closed);
+  if (trend) lines.push(trend);
   const summarise = (label: string, buckets: Bucket[]) => {
     const good = buckets.filter((b) => b.scored >= 3);
     if (!good.length) return;
@@ -196,6 +220,8 @@ export async function buildStatsReport(): Promise<string> {
   ];
   if (scored.length) {
     lines.push(`总体：${metricsLine(overall)}`, `平均持仓时长：${avgHoldH.toFixed(1)} 小时`);
+    const trend = learningTrendLine(closed);
+    if (trend) lines.push(trend);
   }
   if (scored.length < 20) {
     lines.push(

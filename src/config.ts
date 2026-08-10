@@ -92,7 +92,7 @@ export const config = {
     // capital-%/margin/loss-cap decide the size). Kept small only if you want to
     // clamp lots regardless of capital.
     maxPositionSize: num("MAX_POSITION_SIZE", 0),
-    maxOpenPositions: num("MAX_OPEN_POSITIONS", 3),
+    maxOpenPositions: num("MAX_OPEN_POSITIONS", 5),
     minAccountBalance: num("MIN_ACCOUNT_BALANCE", 100),
     stopLossPct: num("STOP_LOSS_PCT", 2),
     takeProfitPct: num("TAKE_PROFIT_PCT", 4),

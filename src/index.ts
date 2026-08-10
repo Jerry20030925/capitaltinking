@@ -452,10 +452,15 @@ async function runCycle(client: CapitalClient): Promise<void> {
   // Continuous learning: fold this cycle's updated market thesis + new lessons
   // into the persistent brain memory, so the next cycle reasons from accumulated
   // understanding. Fail-safe: on a write hiccup the prior memory simply stands.
-  if (brain.thesis || (brain.lessons && brain.lessons.length)) {
-    const updated = await updateBrainMemory(memory, { thesis: brain.thesis, lessons: brain.lessons });
+  if (brain.thesis || brain.lessons?.length || brain.dropLessons?.length) {
+    const { memory: updated, dropped } = await updateBrainMemory(memory, {
+      thesis: brain.thesis,
+      lessons: brain.lessons,
+      dropLessons: brain.dropLessons,
+    });
     lastThesis = updated.thesis || lastThesis;
     if (brain.lessons?.length) log.info(`🧠 学到新经验：${brain.lessons.join(" | ")}`);
+    if (dropped.length) log.info(`🧠 剔除过时经验：${dropped.join(" | ")}`);
     if (brain.thesis) log.info(`🧠 更新市场判断：${brain.thesis}`);
     log.info(`Brain memory now holds ${updated.lessons.length} lessons.`);
   }

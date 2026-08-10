@@ -69,8 +69,23 @@ export function applyRisk(
   // several capital-deployed trades in one cycle don't collectively over-commit.
   let availableLeft = account.available;
 
-  for (const d of decisions) {
+  // Fund the MOST PROMISING opportunities first: process CLOSEs (risk-down)
+  // first, then BUY/SELL sorted by confidence DESC, so when margin or the
+  // max-positions cap runs out this cycle it's the weakest ideas that miss out —
+  // the remaining available funds always chase the highest-conviction trades.
+  const ordered = [...decisions].sort((a, b) => {
+    const rank = (d: TradeDecision) =>
+      d.action === "CLOSE" ? 0 : d.action === "BUY" || d.action === "SELL" ? 1 : 2;
+    const ra = rank(a);
+    const rb = rank(b);
+    if (ra !== rb) return ra - rb;
+    return ra === 1 ? b.confidence - a.confidence : 0;
+  });
+
+  for (const d of ordered) {
     if (d.action === "HOLD") continue;
+
+    // Handle closes first — always allowed (reducing risk).
 
     // Handle closes first — always allowed (reducing risk).
     if (d.action === "CLOSE") {

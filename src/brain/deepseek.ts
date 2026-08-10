@@ -76,6 +76,7 @@ export interface BrainOutput {
   // --- continuous-learning outputs (persisted to brain memory across cycles) ---
   thesis?: string; // updated running view of the global market
   lessons?: string[]; // new, reusable lessons distilled this cycle
+  dropLessons?: string[]; // prior lessons the brain now considers disproven/stale
 }
 
 const SYSTEM_PROMPT = `你是一名拥有十余年实战经验的【专业交易员】，曾在对冲基金担任宏观交易主管，
@@ -146,6 +147,9 @@ const SYSTEM_PROMPT = `你是一名拥有十余年实战经验的【专业交易
    - lessons：提炼 1-3 条【新的、可复用、可操作】的经验教训（不要空话）。优先总结：
      哪种信号/打法在哪种市场状态下让你赚钱或亏钱、什么情况下该放弃交易、止损止盈的取舍等。
      若本轮确实没有值得沉淀的新经验，可返回空数组。
+   - dropLessons：自我纠错——若你过往某条 lesson 已被后续行情证伪、或已过时/不再适用，
+     把它的原文（或关键片段）放进 dropLessons 予以剔除，让记忆保持精炼、只留真正有效的经验。
+     系统还会给你“学习趋势”（近期 vs 早期的期望/胜率）：若在变差，重点反思并剔除误导性经验。
 
 约束：
 - 只允许操作清单内的品种；每个允许品种给出且仅给出一个决策。
@@ -161,9 +165,10 @@ const SYSTEM_PROMPT = `你是一名拥有十余年实战经验的【专业交易
     { "epic": "GOLD", "action": "BUY|SELL|CLOSE|HOLD", "confidence": 0.0-1.0, "setup": "safe-haven", "stopLossPct": 1.5, "takeProfitPct": 4.0, "reasoning": "理由，引用具体新闻与动量" }
   ],
   "thesis": "3-5 句：你对全球市场的最新总体判断（在旧判断上迭代）",
-  "lessons": ["本轮沉淀的可复用经验1", "经验2"]
+  "lessons": ["本轮沉淀的可复用经验1", "经验2"],
+  "dropLessons": ["要剔除的过时/被证伪的旧经验原文或关键片段"]
 }
-（stopLossPct/takeProfitPct 仅 BUY/SELL 需要；HOLD/CLOSE 可省略。lessons 无新经验可为空数组。）`;
+（stopLossPct/takeProfitPct 仅 BUY/SELL 需要；HOLD/CLOSE 可省略。lessons/dropLessons 无内容时可为空数组。）`;
 
 function buildUserPrompt(
   news: NewsItem[],
@@ -286,6 +291,11 @@ export async function think(
     typeof parsed.thesis === "string" && parsed.thesis.trim() ? parsed.thesis.trim() : undefined;
   parsed.lessons = Array.isArray(parsed.lessons)
     ? parsed.lessons
+        .filter((l): l is string => typeof l === "string" && l.trim().length > 0)
+        .slice(0, 5)
+    : undefined;
+  parsed.dropLessons = Array.isArray(parsed.dropLessons)
+    ? parsed.dropLessons
         .filter((l): l is string => typeof l === "string" && l.trim().length > 0)
         .slice(0, 5)
     : undefined;

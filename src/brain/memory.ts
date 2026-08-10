@@ -50,17 +50,30 @@ export async function loadBrainMemory(): Promise<BrainMemory> {
  */
 export async function updateBrainMemory(
   prev: BrainMemory,
-  update: { thesis?: string; lessons?: string[] },
-): Promise<BrainMemory> {
+  update: { thesis?: string; lessons?: string[]; dropLessons?: string[] },
+): Promise<{ memory: BrainMemory; dropped: string[] }> {
   const thesis = (update.thesis?.trim() || prev.thesis).slice(0, MAX_THESIS_LEN);
   const incoming = (update.lessons ?? [])
     .map((l) => l.trim())
     .filter(Boolean)
     .map((l) => l.slice(0, MAX_LESSON_LEN));
 
+  // Self-correction: drop prior lessons the brain now considers disproven/stale.
+  // Match loosely (either text contains the other) so it needn't quote verbatim.
+  const dropNeedles = (update.dropLessons ?? [])
+    .map((d) => d.trim().toLowerCase())
+    .filter((d) => d.length >= 4);
+  const dropped: string[] = [];
+  const kept = prev.lessons.filter((l) => {
+    const lc = l.toLowerCase();
+    const hit = dropNeedles.some((d) => lc.includes(d) || d.includes(lc));
+    if (hit) dropped.push(l);
+    return !hit;
+  });
+
   const merged: string[] = [];
   const seen = new Set<string>();
-  for (const l of [...incoming, ...prev.lessons]) {
+  for (const l of [...incoming, ...kept]) {
     const k = l.toLowerCase();
     if (seen.has(k)) continue;
     seen.add(k);
@@ -74,7 +87,7 @@ export async function updateBrainMemory(
   } catch (e) {
     log.warn("Failed to persist brain memory:", (e as Error).message);
   }
-  return next;
+  return { memory: next, dropped };
 }
 
 /** Render memory as a compact prompt block (top lessons only); "" when empty. */
