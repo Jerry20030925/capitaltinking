@@ -3,6 +3,7 @@ import { log, audit } from "./logger.js";
 import { CapitalClient, type MarketSnapshot } from "./capital/client.js";
 import { fetchLatestNews } from "./news/fetch.js";
 import { think } from "./brain/deepseek.js";
+import { computeIndicators } from "./brain/indicators.js";
 import { challenge, applyDevilVeto, type DevilResult } from "./brain/devil.js";
 import { applyRisk, type RiskResult } from "./risk/guard.js";
 import { checkCircuitBreakers, type BreakerStatus } from "./risk/breakers.js";
@@ -215,15 +216,19 @@ async function runCycle(client: CapitalClient): Promise<void> {
   for (const epic of config.risk.allowedEpics) {
     try {
       const m = await client.getMarket(epic);
-      // Enrich with multi-day trend so the brain distinguishes trend from noise.
+      // Enrich with multi-day trend + technical indicators (the Quant layer) from
+      // one price call, so the brain reasons on real momentum/volatility.
       try {
-        const closes = await client.getHistoricalCloses(epic, config.trendDays);
+        const bars = await client.getHistoricalBars(epic, "DAY", 60);
+        const closes = bars.map((b) => b.close);
         if (closes.length >= 2) {
-          const first = closes[0]!;
-          const last = closes[closes.length - 1]!;
-          m.trendCloses = closes.map((c) => round2(c));
+          const trend = closes.slice(-config.trendDays);
+          const first = trend[0]!;
+          const last = trend[trend.length - 1]!;
+          m.trendCloses = trend.map((c) => round2(c));
           m.trendPct = first ? ((last - first) / first) * 100 : 0;
         }
+        m.indicators = computeIndicators(bars);
       } catch (e) {
         log.warn(`No history for ${epic}:`, (e as Error).message);
       }

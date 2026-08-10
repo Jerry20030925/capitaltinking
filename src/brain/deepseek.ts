@@ -1,6 +1,7 @@
 import { config } from "../config.js";
 import { log } from "../logger.js";
 import { callDeepSeek, extractJson } from "./client.js";
+import { describeIndicators } from "./indicators.js";
 import type { NewsItem } from "../news/fetch.js";
 import type { MarketSnapshot, OpenPosition } from "../capital/client.js";
 
@@ -76,6 +77,13 @@ const SYSTEM_PROMPT = `你是一名严谨、专业的宏观交易分析师，为
    同时看价格在当日高低区间的位置：已接近日内高点的多头、接近日内低点的空头，追高杀低风险大，需降低信心。
    还要区分【近几日趋势】与【单日波动】：单日大涨/大跌若与多日趋势相反，可能只是回调/反弹的噪音；
    趋势与单日方向、新闻三者一致时，信心才应更高。
+2.5 技术指标（Quant，系统已算好，请务必结合）：
+   - RSI14：>70 超买（多头追高易被套）、<30 超卖（空头追杀易反弹）、40-60 中性；
+   - EMA20/EMA50：现价在均线之上=偏多结构，之下=偏空；EMA20 在 EMA50 之上=多头排列，反之空头排列；
+   - MACD柱：>0 多头动量、<0 空头动量；柱由正转负或价格新高而柱走弱=动量背离，警惕反转；
+   - ATR/波动%：越大代表波动越大，止损需更宽、信心与仓位应更谨慎。
+   原则：【技术面】要与【新闻】【动量/趋势】共振时才提高信心；三者矛盾时降信心或 HOLD。
+   例：新闻利多但 RSI 已 78、价格远离 EMA 又临阻力 → 追多风险大，降信心或等回调。
 3. 组合与相关性：避免同时重仓高度相关的品种（如 GOLD 与 SILVER 同为避险、会放大同向风险；
    US500 与科技情绪高度相关）。若已有同向敞口，新仓要更谨慎或分散。
 4. 持仓管理：审视每个现有持仓的浮动盈亏(uPL)与最新新闻/动量：
@@ -128,7 +136,8 @@ function buildUserPrompt(
         const series = m.trendCloses?.length ? `，近期收盘 ${m.trendCloses.join(" → ")}` : "";
         trend = `；近${config.trendDays}日趋势 ${tArrow}${m.trendPct.toFixed(2)}%${series}`;
       }
-      return `- ${m.epic} (${m.instrumentName})：现价 ${m.offer}，今日 ${arrow}${m.percentageChange}%（净变动 ${m.netChange}${range}）${trend} [${m.marketStatus}]`;
+      const ind = m.indicators ? `\n    指标：${describeIndicators(m.indicators)}` : "";
+      return `- ${m.epic} (${m.instrumentName})：现价 ${m.offer}，今日 ${arrow}${m.percentageChange}%（净变动 ${m.netChange}${range}）${trend} [${m.marketStatus}]${ind}`;
     })
     .join("\n");
   const posBlock =

@@ -16,6 +16,33 @@ export interface Account {
   currency: string;
 }
 
+/** Extract a mid price from a Capital price field (a number or {bid, ask}). */
+function mid(p: any): number {
+  if (typeof p === "number") return p;
+  const bid = p?.bid ?? 0;
+  const ask = p?.ask ?? bid;
+  return bid && ask ? (bid + ask) / 2 : bid || ask;
+}
+
+/** One OHLC bar (mid prices). */
+export interface Bar {
+  high: number;
+  low: number;
+  close: number;
+}
+
+/** Computed technical indicators — the "Quant" view fed to the brain. */
+export interface Indicators {
+  rsi14: number; // 0-100; >70 overbought, <30 oversold
+  ema20: number;
+  ema50: number; // NaN if <50 bars
+  macd: number; // MACD line (EMA12 - EMA26)
+  macdSignal: number; // 9-EMA of the MACD line
+  macdHist: number; // macd - signal (>0 bullish momentum)
+  atr14: number; // average true range (volatility, price units)
+  atrPct: number; // ATR as % of price
+}
+
 export interface MarketSnapshot {
   epic: string;
   instrumentName: string;
@@ -28,6 +55,7 @@ export interface MarketSnapshot {
   low: number;
   trendPct?: number; // % change over the recent trend window (multi-day)
   trendCloses?: number[]; // recent daily closes, oldest -> newest
+  indicators?: Indicators; // computed technical indicators (see brain/indicators.ts)
   // Instrument dealing rules (for balance/leverage-based position sizing).
   marginFactor: number; // fraction of notional required as margin (e.g. 0.05 = 20:1)
   contractSize: number; // units per 1 lot
@@ -174,21 +202,25 @@ export class CapitalClient {
     };
   }
 
-  /** Daily historical mid-close prices for an epic (oldest -> newest). */
-  async getHistoricalCloses(epic: string, days: number): Promise<number[]> {
+  /** Historical OHLC bars (mid prices, oldest -> newest) at a given resolution. */
+  async getHistoricalBars(epic: string, resolution: string, max: number): Promise<Bar[]> {
     const { data } = await this.request<{ prices: any[] }>(
       "GET",
-      `/api/v1/prices/${encodeURIComponent(epic)}?resolution=DAY&max=${days}`,
+      `/api/v1/prices/${encodeURIComponent(epic)}?resolution=${resolution}&max=${max}`,
     );
     return (data.prices ?? [])
-      .map((p) => {
-        const c = p.closePrice;
-        if (typeof c === "number") return c;
-        const bid = c?.bid ?? 0;
-        const ask = c?.ask ?? bid;
-        return bid && ask ? (bid + ask) / 2 : bid || ask;
-      })
-      .filter((n: number) => n > 0);
+      .map((p) => ({
+        high: mid(p.highPrice),
+        low: mid(p.lowPrice),
+        close: mid(p.closePrice),
+      }))
+      .filter((b: Bar) => b.close > 0);
+  }
+
+  /** Daily historical mid-close prices for an epic (oldest -> newest). */
+  async getHistoricalCloses(epic: string, days: number): Promise<number[]> {
+    const bars = await this.getHistoricalBars(epic, "DAY", days);
+    return bars.map((b) => b.close);
   }
 
   /** Transactions (incl. realised P/L) between two ISO timestamps. */

@@ -1,5 +1,6 @@
 import { log } from "../logger.js";
 import { callDeepSeek, extractJson } from "./client.js";
+import { describeIndicators } from "./indicators.js";
 import type { NewsItem } from "../news/fetch.js";
 import type { MarketSnapshot, OpenPosition } from "../capital/client.js";
 import type { TradeDecision, BrainOutput } from "./deepseek.js";
@@ -57,7 +58,8 @@ function marketLine(m: MarketSnapshot): string {
     m.trendPct !== undefined
       ? `；近期趋势 ${m.trendPct > 0 ? "▲" : m.trendPct < 0 ? "▼" : "—"}${m.trendPct.toFixed(2)}%`
       : "";
-  return `- ${m.epic}：现价 ${m.offer}，今日 ${arrow}${m.percentageChange}%${range}${trend} [${m.marketStatus}]`;
+  const ind = m.indicators ? `；指标 ${describeIndicators(m.indicators)}` : "";
+  return `- ${m.epic}：现价 ${m.offer}，今日 ${arrow}${m.percentageChange}%${range}${trend}${ind} [${m.marketStatus}]`;
 }
 
 function buildDevilPrompt(
