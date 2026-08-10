@@ -27,8 +27,10 @@ primary_region = "iad"
   # Position sizing: deploy a real slice of available funds per trade (not a token
   # lot). No hard lot ceiling — capital-% + the per-trade loss cap size each trade.
   SIZING_MODE = "capital"
-  CAPITAL_DEPLOY_PCT = "50"
-  MAX_TRADE_LOSS_PCT = "5"
+  # Pour ALL available funds into the best (funded-first) opportunity; single-trade
+  # loss cap raised to 20% so full deployment isn't throttled. Circuit breakers stay.
+  CAPITAL_DEPLOY_PCT = "100"
+  MAX_TRADE_LOSS_PCT = "20"
   MAX_POSITION_SIZE = "0"
   # Fund more of the promising ideas at once → deploy more of the available funds.
   MAX_OPEN_POSITIONS = "5"

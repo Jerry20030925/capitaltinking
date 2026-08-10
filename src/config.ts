@@ -105,9 +105,9 @@ export const config = {
       ? "risk"
       : "capital") as "capital" | "risk",
     // Capital mode: target % of AVAILABLE funds to put to work per trade at full
-    // conviction (scaled down for lower confidence). This is the main return lever
-    // — kept high so genuine opportunities deploy real size, not a token lot.
-    capitalDeployPct: num("CAPITAL_DEPLOY_PCT", 50),
+    // conviction (scaled down for lower confidence). 100 = pour ALL available funds
+    // into the best (highest-conviction, funded-first) opportunity — max capital use.
+    capitalDeployPct: num("CAPITAL_DEPLOY_PCT", 100),
     // Dynamic sizing (risk mode): size each trade by RISK-TO-STOP so the loss if
     // the stop is hit is capped at RISK_PER_TRADE_PCT of equity.
     dynamicSizing: bool("DYNAMIC_SIZING", true),
@@ -117,7 +117,9 @@ export const config = {
     // Universal SAFETY CEILING: whatever the sizer picks, a single stop-out may
     // never lose more than this % of equity. Oversized picks are scaled DOWN to
     // fit (only refused if even the min lot breaches it). Tail-risk backstop.
-    maxTradeLossPct: num("MAX_TRADE_LOSS_PCT", 5),
+    // Raised to 20% (user 2026-08-10) so full-capital deployment isn't throttled;
+    // the daily/weekly/drawdown circuit breakers remain the portfolio-level guard.
+    maxTradeLossPct: num("MAX_TRADE_LOSS_PCT", 20),
     // Circuit breakers (realised-P/L based, computed from the committed ledger).
     // On breach the risk engine halts ALL new opens; closes still allowed.
     maxDailyLossPct: num("MAX_DAILY_LOSS_PCT", 2),
