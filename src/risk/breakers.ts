@@ -21,6 +21,7 @@ export interface BreakerStatus {
   weeklyLossPct: number;
   drawdownPct: number;
   hwm: number; // high-water-mark equity
+  consecutiveLosses: number; // trailing run of losing trades (resets on a win)
 }
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
@@ -64,6 +65,14 @@ export function checkCircuitBreakers(closed: ClosedTrade[], balance: number): Br
   const dailyLossPct = balance > 0 && dailyPnl < 0 ? (-dailyPnl / balance) * 100 : 0;
   const weeklyLossPct = balance > 0 && weeklyPnl < 0 ? (-weeklyPnl / balance) * 100 : 0;
 
+  // Cold-streak guard: count the trailing run of losing trades (most recent first),
+  // stopping at the first non-loss (a win or scratch resets the streak).
+  let consecutiveLosses = 0;
+  for (let i = ordered.length - 1; i >= 0; i--) {
+    if (ordered[i]!.pnl < 0) consecutiveLosses++;
+    else break;
+  }
+
   const reasons: string[] = [];
   if (dailyLossPct >= config.risk.maxDailyLossPct) {
     reasons.push(`当日亏损 ${round2(dailyLossPct)}% ≥ ${config.risk.maxDailyLossPct}%`);
@@ -73,6 +82,12 @@ export function checkCircuitBreakers(closed: ClosedTrade[], balance: number): Br
   }
   if (drawdownPct >= config.risk.maxDrawdownPct) {
     reasons.push(`账户回撤 ${round2(drawdownPct)}% ≥ ${config.risk.maxDrawdownPct}%`);
+  }
+  if (
+    config.risk.maxConsecutiveLosses > 0 &&
+    consecutiveLosses >= config.risk.maxConsecutiveLosses
+  ) {
+    reasons.push(`连续亏损 ${consecutiveLosses} 笔 ≥ ${config.risk.maxConsecutiveLosses}（冷静期）`);
   }
 
   return {
@@ -84,5 +99,6 @@ export function checkCircuitBreakers(closed: ClosedTrade[], balance: number): Br
     weeklyLossPct: round2(weeklyLossPct),
     drawdownPct: round2(drawdownPct),
     hwm: round2(peak),
+    consecutiveLosses,
   };
 }

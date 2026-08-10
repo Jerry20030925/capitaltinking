@@ -26,11 +26,13 @@ primary_region = "iad"
 
   # Position sizing: deploy a real slice of available funds per trade (not a token
   # lot). No hard lot ceiling — capital-% + the per-trade loss cap size each trade.
+  # Dynamic risk-based sizing: RISK (0.5–1.5%/trade, scaled by signal strength,
+  # hard-capped 2%) is the control; capital % is only a utilisation ceiling.
   SIZING_MODE = "capital"
-  # Pour ALL available funds into the best (funded-first) opportunity; single-trade
-  # loss cap raised to 20% so full deployment isn't throttled. Circuit breakers stay.
-  CAPITAL_DEPLOY_PCT = "100"
-  MAX_TRADE_LOSS_PCT = "20"
+  CAPITAL_DEPLOY_PCT = "100"   # may use up to 100% of available margin — NOT a loss limit
+  TARGET_RISK_MIN_PCT = "0.5"
+  TARGET_RISK_MAX_PCT = "1.5"
+  MAX_TRADE_LOSS_PCT = "2"     # absolute per-trade risk ceiling
   MAX_POSITION_SIZE = "0"
   # Fund more of the promising ideas at once → deploy more of the available funds.
   MAX_OPEN_POSITIONS = "5"
@@ -39,11 +41,12 @@ primary_region = "iad"
   TAKE_PROFIT_PCT = "4"
   MIN_CONFIDENCE = "0.6"
 
-  # Risk-budget engine
+  # Circuit breakers (portfolio-level guard — always on)
   RISK_PER_TRADE_PCT = "0.5"
-  MAX_DAILY_LOSS_PCT = "2"
-  MAX_WEEKLY_LOSS_PCT = "5"
+  MAX_DAILY_LOSS_PCT = "3"
+  MAX_WEEKLY_LOSS_PCT = "7"
   MAX_DRAWDOWN_PCT = "10"
+  MAX_CONSECUTIVE_LOSSES = "4"
 
   DYNAMIC_SIZING = "true"
   USE_TRAILING_STOP = "true"

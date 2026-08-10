@@ -275,7 +275,7 @@ async function runCycle(client: CapitalClient): Promise<void> {
     log.info(`Brain memory: ${memory.lessons.length} lessons, thesis ${memory.thesis ? "set" : "empty"}`);
   }
   log.info(
-    `Risk budget: 今日 ${breakers.dailyPnl} (亏${breakers.dailyLossPct}%) / 近7日 ${breakers.weeklyPnl} (亏${breakers.weeklyLossPct}%) / 回撤 ${breakers.drawdownPct}%`,
+    `Risk budget: 今日 ${breakers.dailyPnl} (亏${breakers.dailyLossPct}%) / 近7日 ${breakers.weeklyPnl} (亏${breakers.weeklyLossPct}%) / 回撤 ${breakers.drawdownPct}% / 连亏 ${breakers.consecutiveLosses}`,
   );
   if (breakers.active) log.warn(`🛑 熔断触发，暂停开新仓：${breakers.reason}`);
 

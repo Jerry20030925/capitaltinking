@@ -98,33 +98,40 @@ export const config = {
     takeProfitPct: num("TAKE_PROFIT_PCT", 4),
     minConfidence: num("MIN_CONFIDENCE", 0.65),
     // Position-sizing mode:
-    //   "capital" = deploy a target % of AVAILABLE funds per trade (conviction-
-    //               scaled) to MAXIMISE return on capital — the default.
-    //   "risk"    = size by risk-to-stop so a stop-out loses ~RISK_PER_TRADE_PCT.
+    //   "capital" = DYNAMIC RISK-BASED sizing: risk-per-trade (scaled by signal
+    //               strength) is the control; capital % is only a utilisation
+    //               CEILING. Decouples "how much I can deploy" from "how much I can
+    //               lose" — the default, and how you maximise risk-adjusted return.
+    //   "risk"    = simple fixed risk-to-stop so a stop-out loses ~RISK_PER_TRADE_PCT.
     sizingMode: ((process.env.SIZING_MODE ?? "capital").toLowerCase() === "risk"
       ? "risk"
       : "capital") as "capital" | "risk",
-    // Capital mode: target % of AVAILABLE funds to put to work per trade at full
-    // conviction (scaled down for lower confidence). 100 = pour ALL available funds
-    // into the best (highest-conviction, funded-first) opportunity — max capital use.
+    // Capital-UTILISATION CEILING: the MOST margin a single trade may commit, as a
+    // % of funds still available this cycle. 100 = may use all available funds.
+    // This is NOT a loss limit — it only caps how much capital gets deployed.
     capitalDeployPct: num("CAPITAL_DEPLOY_PCT", 100),
+    // Dynamic risk band: risk-per-trade scales with the brain's signal strength
+    // (confidence) from MIN (weak edge) to MAX (strong edge). size = riskBudget /
+    // stopDistance, so a tighter stop buys a bigger position at the SAME risk.
+    targetRiskMinPct: num("TARGET_RISK_MIN_PCT", 0.5),
+    targetRiskMaxPct: num("TARGET_RISK_MAX_PCT", 1.5),
     // Dynamic sizing (risk mode): size each trade by RISK-TO-STOP so the loss if
     // the stop is hit is capped at RISK_PER_TRADE_PCT of equity.
     dynamicSizing: bool("DYNAMIC_SIZING", true),
-    // Max % of equity lost on a single trade if its stop-loss is hit — the risk-
-    // mode sizing target.
+    // "risk" mode only: fixed % of equity risked per trade (before conviction scale).
     riskPerTradePct: num("RISK_PER_TRADE_PCT", 0.5),
-    // Universal SAFETY CEILING: whatever the sizer picks, a single stop-out may
-    // never lose more than this % of equity. Oversized picks are scaled DOWN to
-    // fit (only refused if even the min lot breaches it). Tail-risk backstop.
-    // Raised to 20% (user 2026-08-10) so full-capital deployment isn't throttled;
-    // the daily/weekly/drawdown circuit breakers remain the portfolio-level guard.
-    maxTradeLossPct: num("MAX_TRADE_LOSS_PCT", 20),
+    // ABSOLUTE per-trade risk ceiling: whatever the sizer picks, a single stop-out
+    // may never lose more than this % of equity (scaled DOWN to fit; refused only
+    // if even the min lot breaches it). The hard cap above the dynamic risk band.
+    maxTradeLossPct: num("MAX_TRADE_LOSS_PCT", 2),
     // Circuit breakers (realised-P/L based, computed from the committed ledger).
     // On breach the risk engine halts ALL new opens; closes still allowed.
-    maxDailyLossPct: num("MAX_DAILY_LOSS_PCT", 2),
-    maxWeeklyLossPct: num("MAX_WEEKLY_LOSS_PCT", 5),
+    maxDailyLossPct: num("MAX_DAILY_LOSS_PCT", 3),
+    maxWeeklyLossPct: num("MAX_WEEKLY_LOSS_PCT", 7),
     maxDrawdownPct: num("MAX_DRAWDOWN_PCT", 10),
+    // Halt new opens after this many consecutive losing trades (a cold-streak
+    // guard). Resets on the next win. 0 = disabled.
+    maxConsecutiveLosses: num("MAX_CONSECUTIVE_LOSSES", 4),
     // Trailing stop: the stop follows the price as it moves in your favour.
     useTrailingStop: bool("USE_TRAILING_STOP", true),
   },

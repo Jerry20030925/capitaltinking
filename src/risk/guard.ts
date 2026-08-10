@@ -155,30 +155,42 @@ export function applyRisk(
     const stopLevel = direction === "BUY" ? entry - slDist : entry + slDist;
     const profitLevel = direction === "BUY" ? entry + tpDist : entry - tpDist;
 
-    // Conviction scaler: even a bare min-confidence trade deploys a solid base
-    // (0.7 of target) so we don't trickle token lots; full conviction deploys the
-    // whole target. Tune the floor via how aggressive you want low-conf trades.
+    // Signal strength in 0..1 across the tradeable confidence band (min→full).
     const equity = account.balance;
     const span = Math.max(0.0001, 1 - r.minConfidence);
-    const convFactor =
-      0.7 + 0.3 * Math.min(1, Math.max(0, (d.confidence - r.minConfidence) / span));
+    const strength = Math.min(1, Math.max(0, (d.confidence - r.minConfidence) / span));
 
     // Position sizing.
     let size: number;
     if (r.sizingMode === "capital") {
-      // CAPITAL-DEPLOYMENT sizing: put a target fraction of AVAILABLE funds to
-      // work per trade (conviction-scaled), maximising return on capital instead
-      // of trickling min lots. The stop-loss ceiling below still bounds tail loss.
-      const targetMargin = availableLeft * (r.capitalDeployPct / 100) * convFactor;
+      // DYNAMIC RISK-BASED sizing — the profit engine done right: RISK, not capital
+      // %, is the control. Risk-per-trade scales with signal strength between the
+      // target band (weak edge → small risk, strong edge → larger), hard-capped at
+      // the absolute ceiling. size = riskBudget ÷ stopDistance, so a TIGHTER stop
+      // earns a BIGGER position at the SAME risk (better capital efficiency).
+      // Capital % only caps how much MARGIN may be committed (a utilisation ceiling,
+      // never a loss limit). This maximises expected-return-per-unit-risk.
+      const riskPct = Math.min(
+        r.maxTradeLossPct,
+        r.targetRiskMinPct + (r.targetRiskMaxPct - r.targetRiskMinPct) * strength,
+      );
+      const riskBudget = equity * (riskPct / 100);
+      const riskPerUnit = market.contractSize * slDist;
+      let raw = riskPerUnit > 0 ? riskBudget / riskPerUnit : market.minDealSize;
+      // Capital-utilisation ceiling: committed margin ≤ capitalDeployPct% of what's
+      // still available this cycle.
       const marginPerUnit = market.contractSize * entry * market.marginFactor;
-      let raw = marginPerUnit > 0 ? targetMargin / marginPerUnit : market.minDealSize;
+      if (marginPerUnit > 0) {
+        const maxUnitsByCapital = (availableLeft * (r.capitalDeployPct / 100)) / marginPerUnit;
+        raw = Math.min(raw, maxUnitsByCapital);
+      }
       if (market.maxDealSize > 0) raw = Math.min(raw, market.maxDealSize);
       if (r.maxPositionSize > 0) raw = Math.min(raw, r.maxPositionSize);
       size = roundToStep(raw, market.minDealSize);
       if (size < market.minDealSize) size = market.minDealSize;
     } else if (r.dynamicSizing) {
-      // RISK-TO-STOP sizing: size so the loss if the stop is hit ≈ RISK_PER_TRADE_PCT.
-      const budget = equity * (r.riskPerTradePct / 100) * convFactor;
+      // Simple fixed risk-to-stop (SIZING_MODE=risk): loss-if-stopped ≈ RISK_PER_TRADE_PCT.
+      const budget = equity * (r.riskPerTradePct / 100) * (0.7 + 0.3 * strength);
       const riskPerUnit = market.contractSize * slDist;
       let raw = riskPerUnit > 0 ? budget / riskPerUnit : market.minDealSize;
       if (market.maxDealSize > 0) raw = Math.min(raw, market.maxDealSize);
