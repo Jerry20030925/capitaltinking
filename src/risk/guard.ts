@@ -2,6 +2,7 @@ import { config } from "../config.js";
 import type { Account, OpenPosition, MarketSnapshot } from "../capital/client.js";
 import type { TradeDecision, Setup } from "../brain/deepseek.js";
 import type { DevilVerdict } from "../brain/devil.js";
+import { ExposureBook, exposureLimits, groupOf, type Exposure } from "./exposure.js";
 
 export interface ApprovedTrade {
   epic: string;
@@ -50,10 +51,18 @@ export function applyRisk(
   markets: Map<string, MarketSnapshot>,
   halt: Halt = { active: false, reason: "" },
   consecutiveLosses = 0,
-  setupEv: Map<string, { n: number; evR: number | null }> = new Map(),
+  setupEv: Map<
+    string,
+    { n: number; evR: number | null; winRate?: number; profitFactor?: number | null }
+  > = new Map(),
+  openExposure: Exposure[] = [],
 ): RiskResult {
   const result: RiskResult = { approved: [], closes: [], rejected: [] };
   const r = config.risk;
+
+  // Portfolio-heat book: seeded with the risk of already-open positions, it caps
+  // aggregate and per-correlation-group risk as we approve trades this cycle.
+  const heat = new ExposureBook(exposureLimits(account.balance), openExposure);
 
   // Cold-streak position multiplier: shrink size as losses stack up (2→×0.7,
   // 3→×0.5); the ≥4 case is already halted by the circuit breaker. Protecting
@@ -203,11 +212,32 @@ export function applyRisk(
       // earns a BIGGER position at the SAME risk (better capital efficiency).
       // Capital % only caps how much MARGIN may be committed (a utilisation ceiling,
       // never a loss limit). This maximises expected-return-per-unit-risk.
-      const riskPct = Math.min(
+      let riskPct = Math.min(
         r.maxTradeLossPct,
         (r.targetRiskMinPct + (r.targetRiskMaxPct - r.targetRiskMinPct) * strength) *
           streakMultiplier,
       );
+
+      // EDGE-SCALED SIZING (fractional Kelly): a setup with a PROVEN positive
+      // realised edge deserves more capital — that's how you compound (bet big
+      // where you have an edge, small where you don't). Kelly's growth-optimal
+      // fraction from win-rate p and profit-factor PF is f* = p·(PF−1)/PF. We risk
+      // KELLY_FRACTION of that (fractional Kelly = far lower variance) and let it
+      // RAISE the signal-based risk up to EDGE_MAX_MULT×, still hard-capped by
+      // MAX_TRADE_LOSS_PCT. Only proven setups (≥MIN_EV_SAMPLE, +EV) get boosted;
+      // unproven ones stay at the baseline. Never reduces below the base risk.
+      if (r.edgeSizing && d.setup) {
+        const ev = setupEv.get(d.setup);
+        if (ev && ev.n >= r.minEvSample && (ev.evR ?? 0) > 0 && ev.winRate !== undefined) {
+          const pf = ev.profitFactor; // null = no losing trades yet; undefined = unknown
+          const fStar =
+            pf === null ? ev.winRate : pf === undefined ? 0 : pf > 1 ? ev.winRate * ((pf - 1) / pf) : 0;
+          const kellyRiskPct = r.kellyFraction * fStar * 100;
+          const boosted = Math.min(riskPct * r.edgeMaxMult, Math.max(riskPct, kellyRiskPct));
+          riskPct = Math.min(r.maxTradeLossPct, boosted);
+        }
+      }
+
       const riskBudget = equity * (riskPct / 100);
       const riskPerUnit = market.contractSize * slDist;
       let raw = riskPerUnit > 0 ? riskBudget / riskPerUnit : market.minDealSize;
@@ -253,6 +283,31 @@ export function applyRisk(
       riskAmount = round(size * market.contractSize * slDist);
     }
 
+    // PORTFOLIO-HEAT gate: cap AGGREGATE and per-correlation-group open risk so
+    // best-first allocation can't concentrate the whole book into one theme. Scale
+    // the position DOWN to the remaining heat budget; refuse only if even the min
+    // lot won't fit. (A hedge — opposite direction in the same group — frees room.)
+    const room = heat.roomFor(d.epic, direction);
+    if (riskAmount > room * 1.001 && slDist > 0) {
+      if (room <= 0) {
+        result.rejected.push({
+          epic: d.epic,
+          reason: `组合风险敞口已满（${groupOf(d.epic)} 组/总量达上限），暂不加仓`,
+        });
+        continue;
+      }
+      const capped = room / (market.contractSize * slDist);
+      size = roundToStep(capped, market.minDealSize);
+      if (size < market.minDealSize) {
+        result.rejected.push({
+          epic: d.epic,
+          reason: `最小手数风险 ${round(market.minDealSize * market.contractSize * slDist)} 超过剩余组合敞口预算 ${round(room)}（${groupOf(d.epic)} 组过度集中）`,
+        });
+        continue;
+      }
+      riskAmount = round(size * market.contractSize * slDist);
+    }
+
     // Margin safety: don't open a position we can't cover (uses remaining margin).
     const requiredMargin = size * market.contractSize * entry * market.marginFactor;
     if (requiredMargin > availableLeft) {
@@ -284,6 +339,7 @@ export function applyRisk(
       secondAgree: d.secondAgree,
     });
     availableLeft = round(availableLeft - requiredMargin);
+    heat.admit({ epic: d.epic, direction, risk: riskAmount });
     projectedOpen++;
   }
 

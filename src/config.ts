@@ -138,6 +138,15 @@ export const config = {
     // stopDistance, so a tighter stop buys a bigger position at the SAME risk.
     targetRiskMinPct: num("TARGET_RISK_MIN_PCT", 0.5),
     targetRiskMaxPct: num("TARGET_RISK_MAX_PCT", 1.5),
+    // EDGE-SCALED SIZING (fractional Kelly): once a SETUP has ≥MIN_EV_SAMPLE
+    // realised trades and a POSITIVE expectancy, bet MORE on it — Kelly's growth-
+    // optimal fraction f* = winRate·(PF−1)/PF, of which we risk KELLY_FRACTION (a
+    // conservative fraction of full Kelly = much lower variance). The boost can lift
+    // the signal-based risk up to EDGE_MAX_MULT×, always clamped by MAX_TRADE_LOSS_PCT.
+    // This is how you maximise long-run growth: press proven winners, not hunches.
+    edgeSizing: bool("EDGE_SIZING", true),
+    kellyFraction: num("KELLY_FRACTION", 0.34), // ≈ third-Kelly (prudent-aggressive)
+    edgeMaxMult: num("EDGE_MAX_MULT", 2.5), // proven edge → up to 2.5× the base risk
     // Dynamic sizing (risk mode): size each trade by RISK-TO-STOP so the loss if
     // the stop is hit is capped at RISK_PER_TRADE_PCT of equity.
     dynamicSizing: bool("DYNAMIC_SIZING", true),
@@ -155,6 +164,18 @@ export const config = {
     // Halt new opens after this many consecutive losing trades (a cold-streak
     // guard). Resets on the next win. 0 = disabled.
     maxConsecutiveLosses: num("MAX_CONSECUTIVE_LOSSES", 4),
+    // Portfolio-level concentration control ("portfolio heat"). Per-trade gates
+    // cap ONE trade; these cap the AGGREGATE so best-first allocation can't pile
+    // the whole book into one correlated theme (see src/risk/exposure.ts).
+    //   - MAX_PORTFOLIO_HEAT_PCT: Σ loss-if-stopped across ALL open positions ≤
+    //     this % of equity (total simultaneous risk). 0 = disabled.
+    //   - MAX_GROUP_HEAT_PCT: within a correlation group, the heavier of the long
+    //     vs short side's aggregate risk ≤ this % of equity (concentration). Same-
+    //     direction correlated trades stack; opposite directions hedge. 0 = off.
+    // Oversized/over-concentrated candidates are scaled DOWN to fit, refused only
+    // if even the min lot breaches the cap. CORR_GROUPS overrides the group map.
+    maxPortfolioHeatPct: num("MAX_PORTFOLIO_HEAT_PCT", 10),
+    maxGroupHeatPct: num("MAX_GROUP_HEAT_PCT", 6),
     // Trailing stop: the stop follows the price as it moves in your favour.
     useTrailingStop: bool("USE_TRAILING_STOP", true),
     // Partial profit-taking (scale-outs): let winners run by banking pieces of a

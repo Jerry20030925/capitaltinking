@@ -54,6 +54,14 @@ primary_region = "iad"
   MAX_WEEKLY_LOSS_PCT = "7"
   MAX_DRAWDOWN_PCT = "10"
   MAX_CONSECUTIVE_LOSSES = "4"
+  # Portfolio-heat / correlation caps: bound AGGREGATE and per-theme open risk so
+  # the book can't concentrate into one correlated bet. 0 disables a cap.
+  MAX_PORTFOLIO_HEAT_PCT = "10"
+  MAX_GROUP_HEAT_PCT = "6"
+  # Edge-scaled sizing (fractional Kelly): press setups with a proven +EV edge.
+  EDGE_SIZING = "true"
+  KELLY_FRACTION = "0.34"
+  EDGE_MAX_MULT = "2.5"
 
   DYNAMIC_SIZING = "true"
   USE_TRAILING_STOP = "true"

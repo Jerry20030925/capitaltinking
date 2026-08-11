@@ -16,6 +16,7 @@ import {
 import { challenge, applyDevilVeto, type DevilResult } from "./brain/devil.js";
 import { applyRisk, type RiskResult } from "./risk/guard.js";
 import { checkCircuitBreakers, type BreakerStatus } from "./risk/breakers.js";
+import { ExposureBook, exposureLimits, type Exposure } from "./risk/exposure.js";
 import { notify, notifyEnabled, notifyProvider, telegramFindChatIds } from "./notify/notify.js";
 import { buildDailyReport } from "./analytics/report.js";
 import { buildStatsReport, buildPerfHint, expectancyBySetup } from "./analytics/stats.js";
@@ -268,8 +269,24 @@ async function runCycle(client: CapitalClient): Promise<void> {
   await reconcileExits(client, positions);
 
   // Circuit breakers: read the ledger and decide whether new opens are halted.
-  const { closed: ledger } = await loadTrades();
+  const { closed: ledger, stillOpen } = await loadTrades();
   const breakers = checkCircuitBreakers(ledger, account.balance);
+
+  // Current portfolio heat: match each live position to its ledger open to recover
+  // its recorded risk-if-stopped (1R); fall back to the per-trade cap when unknown
+  // (legacy/reconciled opens). Feeds the concentration gate + a heat log line.
+  const riskByDeal = new Map(
+    stillOpen.filter((o) => o.dealId && o.riskAmount).map((o) => [o.dealId!, o.riskAmount!]),
+  );
+  const openExposure: Exposure[] = positions.map((p) => ({
+    epic: p.epic,
+    direction: p.direction,
+    risk: riskByDeal.get(p.dealId) ?? account.balance * (config.risk.maxTradeLossPct / 100),
+  }));
+  log.info(
+    new ExposureBook(exposureLimits(account.balance), openExposure).summary(account.balance) +
+      `（总量上限 ${config.risk.maxPortfolioHeatPct}% / 单组上限 ${config.risk.maxGroupHeatPct}%）`,
+  );
   // Feed the brains their own recent track record so they lean into setups/regimes
   // that actually pay (and away from losers) — a lightweight learning loop.
   const perfHint = buildPerfHint(ledger);
@@ -366,7 +383,10 @@ async function runCycle(client: CapitalClient): Promise<void> {
   // The risk gate decides what is actually permitted (halted opens if breached).
   // Expected-Value gate input: per-setup realised expectancy (R) from the ledger.
   const setupEv = new Map(
-    [...expectancyBySetup(ledger)].map(([k, m]) => [k, { n: m.n, evR: m.expectancyR }]),
+    [...expectancyBySetup(ledger)].map(([k, m]) => [
+      k,
+      { n: m.n, evR: m.expectancyR, winRate: m.winRate, profitFactor: m.profitFactor },
+    ]),
   );
   for (const [setup, ev] of setupEv) {
     if (ev.evR !== null && ev.n >= config.risk.minEvSample && ev.evR < config.risk.minEvR) {
@@ -381,6 +401,7 @@ async function runCycle(client: CapitalClient): Promise<void> {
     { active: breakers.active, reason: breakers.reason },
     breakers.consecutiveLosses,
     setupEv,
+    openExposure,
   );
   for (const rj of risk.rejected) log.warn(`  Rejected ${rj.epic}: ${rj.reason}`);
 
