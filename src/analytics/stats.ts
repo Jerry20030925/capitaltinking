@@ -227,7 +227,7 @@ export function expectancyBySetup(closed: ClosedTrade[]): Map<string, Metrics> {
 
 /** Build the Chinese analytics report. Pure over the audit log — no live calls. */
 export async function buildStatsReport(): Promise<string> {
-  const { closed, stillOpen } = await loadTrades();
+  const { closed, stillOpen, openBankedPnl } = await loadTrades();
   const tag = config.mode === "live" ? "真钱 💰" : "模拟账户";
 
   if (closed.length === 0) {
@@ -252,6 +252,15 @@ export async function buildStatsReport(): Promise<string> {
     lines.push(`总体：${metricsLine(overall)}`, `平均持仓时长：${avgHoldH.toFixed(1)} 小时`);
     const trend = learningTrendLine(closed);
     if (trend) lines.push(trend);
+  }
+  // Scale-out accounting: banked winnings now fold into each round-trip's P/L, so
+  // the expectancy/R/PF above already reflect them. Surface the split for clarity.
+  const closedBanked = closed.reduce((s, t) => s + (t.bankedPartials ?? 0), 0);
+  if (closedBanked !== 0 || openBankedPnl !== 0) {
+    lines.push(
+      `分批止盈已落袋：已平仓交易含 ${sign(closedBanked)}${closedBanked.toFixed(1)}` +
+        `（已计入上面的期望/盈亏比）；未平仓持仓另已落袋 ${sign(openBankedPnl)}${openBankedPnl.toFixed(1)}（待平仓后归入）。`,
+    );
   }
   if (scored.length < 20) {
     lines.push(

@@ -31,6 +31,12 @@ export interface ScaleOut {
   tier: number; // tier index reached (1-based count of tiers crossed)
   profitPct: number;
   fullClose: boolean; // remainder too small to leave open → close it all
+  entry: number; // original entry level (for the audit trail)
+  // Realised P/L banked by closing `size` at the current exit price. Recorded on
+  // the "partial" audit event so the ledger can attribute these banked winnings to
+  // the round-trip — otherwise every scaled-out winner is silently under-counted,
+  // biasing the EV gate, Kelly sizing and drawdown maths (all read realised P/L).
+  pnl: number;
 }
 
 const STATE_FILE = process.env.LEDGER_DIR
@@ -111,6 +117,12 @@ export function planScaleOuts(
       fullClose = true;
     }
 
+    // Realised P/L on the banked chunk: price move from entry × size × contract
+    // size (gross, consistent with how close/uPL P/L is recorded elsewhere).
+    const pnl = round2(
+      (p.direction === "BUY" ? exit - p.level : p.level - exit) * size * m.contractSize,
+    );
+
     plans.push({
       dealId: p.dealId,
       epic: p.epic,
@@ -119,6 +131,8 @@ export function planScaleOuts(
       tier: crossed,
       profitPct: round2(profitPct),
       fullClose,
+      entry: p.level,
+      pnl,
     });
     e.fired = crossed;
   }

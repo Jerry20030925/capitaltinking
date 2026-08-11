@@ -475,6 +475,10 @@ async function runCycle(client: CapitalClient): Promise<void> {
             profitPct: pl.profitPct,
             tier: pl.tier,
             fullClose: pl.fullClose,
+            entry: pl.entry,
+            // Banked realised P/L — folded into the round-trip's total by the
+            // analytics reconstruction so scaled-out winners aren't under-counted.
+            pnl: pl.pnl,
           });
           done.push(`${pl.epic} +${pl.profitPct}% 平${pl.size}${pl.fullClose ? "(清仓)" : ""}`);
         } catch (e) {

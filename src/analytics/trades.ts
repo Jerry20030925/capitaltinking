@@ -6,9 +6,13 @@ import type { DevilVerdict } from "../brain/devil.js";
 /**
  * Trade reconstruction from the append-only audit log (trades.log.jsonl).
  *
- * The log records three event kinds we care about here:
- *   - "open":  a position we opened (carries regime/setup/confidence/entry/dealId)
- *   - "close": a position that closed (carries realised pnl + dealId)
+ * The log records these event kinds we care about here:
+ *   - "open":    a position we opened (carries regime/setup/confidence/entry/dealId)
+ *   - "close":   a position that closed (carries realised pnl + dealId)
+ *   - "partial": a scale-out that banked PART of a still-open winner (carries the
+ *                banked pnl + dealId). These are folded into the round-trip's total
+ *                so scaled-out winners aren't under-counted (which would bias the
+ *                EV gate, Kelly sizing and drawdown maths — all read realised P/L).
  * A round-trip trade is an "open" paired with its "close". Pairing is by dealId
  * when available, otherwise FIFO within an epic (legacy records predate dealId
  * capture). Broker-side SL/TP exits are folded in via reconciled "close" events.
@@ -48,13 +52,30 @@ export interface CloseRecord {
 export interface ClosedTrade {
   open: OpenRecord;
   close: CloseRecord;
-  pnl?: number; // undefined when the close carried no P/L
+  pnl?: number; // full realised P/L = final close P/L + any banked scale-outs
+  bankedPartials?: number; // realised P/L already banked via scale-outs (subset of pnl)
   holdMs: number;
 }
 
 export interface Reconstruction {
   closed: ClosedTrade[];
   stillOpen: OpenRecord[];
+  // Scale-out P/L banked on positions that are STILL OPEN (not yet in a round-trip).
+  // Already sits in the account balance; surfaced so reports can reflect it.
+  openBankedPnl: number;
+}
+
+interface PartialRecord {
+  dealId: string;
+  pnl: number;
+}
+
+function toPartial(e: Record<string, any>): PartialRecord | undefined {
+  // Only genuine scale-outs (position stays open) carry banked P/L we must add.
+  // A fullClose partial closes the remainder → that chunk becomes a reconciled
+  // "close" event carrying its own P/L, so counting it here too would double-count.
+  if (e.fullClose || !e.dealId || typeof e.pnl !== "number") return undefined;
+  return { dealId: String(e.dealId), pnl: e.pnl };
 }
 
 /** Read and JSON-parse the audit log, tolerating blank/corrupt lines. */
@@ -120,6 +141,14 @@ export function reconstructTrades(events: Record<string, unknown>[]): Reconstruc
   const opens = events.filter((e) => e.event === "open").map(toOpen);
   const closes = events.filter((e) => e.event === "close").map(toClose);
 
+  // Banked scale-out P/L, summed per dealId, to fold into each round-trip's total.
+  const partialByDeal = new Map<string, number>();
+  for (const e of events) {
+    if (e.event !== "partial") continue;
+    const p = toPartial(e as Record<string, any>);
+    if (p) partialByDeal.set(p.dealId, (partialByDeal.get(p.dealId) ?? 0) + p.pnl);
+  }
+
   const openByDeal = new Map<string, OpenRecord>();
   const unmatched: OpenRecord[] = [];
   for (const o of opens) {
@@ -132,10 +161,16 @@ export function reconstructTrades(events: Record<string, unknown>[]): Reconstruc
 
   const pair = (o: OpenRecord, c: CloseRecord) => {
     consumed.add(o);
+    // Full realised P/L = the final close's P/L + everything banked via scale-outs
+    // before it. Keep undefined only when neither piece carries a number (legacy).
+    const banked = o.dealId ? partialByDeal.get(o.dealId) : undefined;
+    const pnl =
+      c.pnl === undefined && banked === undefined ? undefined : (c.pnl ?? 0) + (banked ?? 0);
     closed.push({
       open: o,
       close: c,
-      pnl: c.pnl,
+      pnl,
+      bankedPartials: banked,
       holdMs: Math.max(0, new Date(c.at).getTime() - new Date(o.at).getTime()),
     });
   };
@@ -161,8 +196,13 @@ export function reconstructTrades(events: Record<string, unknown>[]): Reconstruc
   }
 
   const stillOpen = opens.filter((o) => !consumed.has(o));
+  // Scale-out P/L already banked on positions that haven't closed yet (their
+  // round-trip isn't in `closed`, but the cash is real and in the balance).
+  let openBankedPnl = 0;
+  const openDeals = new Set(stillOpen.map((o) => o.dealId).filter(Boolean) as string[]);
+  for (const [dealId, pnl] of partialByDeal) if (openDeals.has(dealId)) openBankedPnl += pnl;
   void unmatched;
-  return { closed, stillOpen };
+  return { closed, stillOpen, openBankedPnl: Math.round(openBankedPnl * 100) / 100 };
 }
 
 /** Convenience: read the log from disk and reconstruct in one call. */
