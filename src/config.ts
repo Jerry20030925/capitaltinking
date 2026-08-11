@@ -178,6 +178,12 @@ export const config = {
     maxGroupHeatPct: num("MAX_GROUP_HEAT_PCT", 6),
     // Trailing stop: the stop follows the price as it moves in your favour.
     useTrailingStop: bool("USE_TRAILING_STOP", true),
+    // When a trailing stop is used, should we ALSO attach a hard take-profit
+    // ceiling? Default FALSE = "let winners run": the trailing stop is the exit, so
+    // a trending winner rides the whole move instead of being capped at a fixed TP
+    // (the scale-out tiers already bank guaranteed profit along the way). Set TRUE
+    // to re-impose a fixed TP cap on the remainder (more conservative, caps upside).
+    trailingTakeProfit: bool("TRAILING_TAKE_PROFIT", false),
     // Partial profit-taking (scale-outs): let winners run by banking pieces of a
     // position as it moves in favour and trailing the rest. Tiers are
     // "profit%:close%-of-original" pairs; whatever isn't scaled out rides the

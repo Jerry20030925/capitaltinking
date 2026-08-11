@@ -30,19 +30,19 @@ primary_region = "iad"
   # hard-capped 2%) is the control; capital % is only a utilisation ceiling.
   SIZING_MODE = "capital"
   CAPITAL_DEPLOY_PCT = "100"   # may use up to 100% of available margin — NOT a loss limit
-  TARGET_RISK_MIN_PCT = "0.5"
-  TARGET_RISK_MAX_PCT = "1.5"
-  MAX_TRADE_LOSS_PCT = "2"     # absolute per-trade risk ceiling
+  TARGET_RISK_MIN_PCT = "0.6"
+  TARGET_RISK_MAX_PCT = "2.0"  # bold: strongest signals bet the full per-trade ceiling
+  MAX_TRADE_LOSS_PCT = "2"     # absolute per-trade risk ceiling (unchanged — the backstop)
   MAX_POSITION_SIZE = "0"
   # Fund more of the promising ideas at once → deploy more of the available funds.
   MAX_OPEN_POSITIONS = "5"
   MIN_ACCOUNT_BALANCE = "100"
   STOP_LOSS_PCT = "2"
   TAKE_PROFIT_PCT = "4"
-  MIN_CONFIDENCE = "0.6"
+  MIN_CONFIDENCE = "0.55"  # bolder: act on more genuine signals (more buy/sell)
   # Composite opportunity score (0-100) gate: below this = no edge = no trade.
   # Above it, position size scales with the score (only high-quality = big size).
-  MIN_SIGNAL_SCORE = "55"
+  MIN_SIGNAL_SCORE = "50"  # bolder entry bar; size still tracks score, big only if strong
   # Expected-Value gate: once a setup has ≥ MIN_EV_SAMPLE realised trades, block it
   # if its measured expectancy (avg R) < MIN_EV_R. Stops feeding a losing playbook.
   MIN_EV_SAMPLE = "8"
@@ -69,6 +69,10 @@ primary_region = "iad"
   # "profit%:close%-of-original" tiers; remainder rides the trailing stop.
   PARTIAL_TP = "true"
   PARTIAL_TP_TIERS = "1:20,2:30,3:20"
+  # Let winners run: with a trailing stop, don't cap the remainder at a fixed TP —
+  # the trail is the exit, so a trending winner rides the whole move (scale-outs
+  # bank guaranteed profit along the way). This is the big-win/right-tail engine.
+  TRAILING_TAKE_PROFIT = "false"
   TREND_DAYS = "7"
 
   # Devil's Advocate — start in observe (record vetoes, don't block) to A/B it.

@@ -494,12 +494,17 @@ async function runCycle(client: CapitalClient): Promise<void> {
 
   // Execute opens.
   for (const t of risk.approved) {
+    // "Let winners run": with a trailing stop, only attach a hard take-profit when
+    // TRAILING_TAKE_PROFIT is on. Otherwise the trailing stop IS the exit and the
+    // remainder rides the full trend uncapped (scale-outs bank profit along the way).
+    const cappedTp = !config.risk.useTrailingStop || config.risk.trailingTakeProfit;
     const stopDesc = config.risk.useTrailingStop
       ? `trailing SL dist ${t.stopDistance}`
       : `SL ${t.stopLevel}`;
+    const tpDesc = cappedTp ? `TP ${t.profitLevel}` : "TP 无(让利润奔跑,跟踪止损保护)";
     if (config.dryRun) {
       log.info(
-        `  [DRY_RUN] would ${t.direction} ${t.epic} size ${t.size} ${stopDesc} TP ${t.profitLevel} (conf ${t.confidence.toFixed(2)})`,
+        `  [DRY_RUN] would ${t.direction} ${t.epic} size ${t.size} ${stopDesc} ${tpDesc} (conf ${t.confidence.toFixed(2)})`,
       );
     } else {
       const order = config.risk.useTrailingStop
@@ -509,7 +514,8 @@ async function runCycle(client: CapitalClient): Promise<void> {
             size: t.size,
             trailingStop: true,
             stopDistance: t.stopDistance,
-            profitDistance: t.profitDistance,
+            // Omit the profit ceiling unless explicitly re-enabled — let it run.
+            profitDistance: cappedTp ? t.profitDistance : undefined,
           }
         : {
             epic: t.epic,
